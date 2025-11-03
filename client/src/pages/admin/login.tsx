@@ -3,9 +3,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { account } from "@/lib/appwrite";
 
 export default function LoginPage() {
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
@@ -15,26 +16,21 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("/api/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+      // Authenticate directly with Appwrite
+      await account.createEmailPasswordSession(email, password);
+
+      toast({
+        title: "Login Successful",
+        description: "Welcome to the admin dashboard!",
       });
 
-      if (response.ok) {
-        window.location.href = "/admin/dashboard";
-      } else {
-        const errorData = await response.json();
-        toast({
-          title: "Login Failed",
-          description: errorData.message || "Invalid credentials",
-          variant: "destructive",
-        });
-      }
-    } catch (error) {
+      // Redirect to dashboard
+      window.location.href = "/admin/dashboard";
+    } catch (error: any) {
+      console.error("Login error:", error);
       toast({
-        title: "An error occurred",
-        description: "Please try again later.",
+        title: "Login Failed",
+        description: error.message || "Invalid credentials",
         variant: "destructive",
       });
     } finally {
@@ -50,12 +46,12 @@ export default function LoginPage() {
         </div>
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="space-y-2">
-            <Label htmlFor="username">Username</Label>
+            <Label htmlFor="email">Email</Label>
             <Input
-              id="username"
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
+              id="email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               required
             />
           </div>

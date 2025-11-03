@@ -3,32 +3,21 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertProjectSchema, insertChatMessageSchema, insertPromptSchema } from "@shared/schema";
 import { z } from "zod";
-import passport from "passport";
 import type { Request, Response, NextFunction } from "express";
 import multer from "multer";
 import Groq from "groq-sdk";
 const upload = multer({ storage: multer.memoryStorage() });
 
-function ensureAuthenticated(req: Request, res: Response, next: NextFunction) {
-  if (req.isAuthenticated()) {
-    return next();
-  }
-  res.status(401).json({ message: "Unauthorized" });
-}
-
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Auth routes
-  app.post("/api/login", passport.authenticate("local"), (req, res) => {
-    res.json({ message: "Logged in successfully", user: req.user });
-  });
-
-  app.post("/api/logout", (req, res) => {
-    req.logout((err) => {
-      if (err) {
-        return res.status(500).json({ message: "Error logging out" });
-      }
-      res.json({ message: "Logged out successfully" });
-    });
+  // Lightweight telemetry endpoint (fire-and-forget)
+  app.post('/api/telemetry', (req, res) => {
+    try {
+      const { event, payload, ts } = req.body ?? {};
+      console.log('[telemetry]', event, ts, payload ? JSON.stringify(payload).slice(0, 500) : '');
+      res.status(204).end();
+    } catch {
+      res.status(204).end();
+    }
   });
 
   // Project routes
@@ -75,21 +64,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/projects", ensureAuthenticated, upload.single("image"), async (req, res) => {
+  app.post("/api/projects", upload.single("image"), async (req, res) => {
     try {
-      if (!req.file) {
-        return res.status(400).json({ message: "Image file is required." });
-      }
+      let imageUrl = req.body.imageUrl || ""; // Use provided URL or empty string
 
-      const fileId = await storage.uploadFile(req.file);
-      const imageUrl = storage.getFileUrl(fileId);
+      const normalizeUrl = (value?: string | null) => {
+        if (!value) return undefined;
+        const trimmed = value.trim();
+        if (!trimmed) return undefined;
+        const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+        try {
+          return new URL(withProtocol).toString();
+        } catch (err) {
+          return undefined;
+        }
+      };
+
+      // Only upload file if one was provided
+      if (req.file) {
+        try {
+          const fileId = await storage.uploadFile(req.file);
+          imageUrl = await storage.getFileUrl(fileId);
+        } catch (storageError) {
+          console.warn("Storage upload failed:", storageError);
+        }
+      }
 
       const validatedData = insertProjectSchema.parse({
         ...req.body,
-        technologies: req.body.technologies ? req.body.technologies.split(",") : [], // Ensure technologies is an array
-        imageUrl: imageUrl, // Use the URL from Appwrite Storage
+        technologies: req.body.technologies
+          ? req.body.technologies
+              .split(",")
+              .map((tech: string) => tech.trim())
+              .filter((tech: string) => tech.length > 0)
+          : [],
+        imageUrl: imageUrl || undefined,
+        demoUrl: normalizeUrl(req.body.demoUrl) ?? "",
       });
-      const project = await storage.createProject(validatedData);
+      const sanitizedData = {
+        ...validatedData,
+        imageUrl: validatedData.imageUrl || undefined,
+        demoUrl: normalizeUrl(validatedData.demoUrl) || undefined,
+      };
+
+      const project = await storage.createProject(sanitizedData);
       res.status(201).json(project);
     } catch (error) {
       console.error("Error creating project:", error);
@@ -100,7 +118,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.put("/api/projects/:id", ensureAuthenticated, async (req, res) => {
+  app.put("/api/projects/:id", async (req, res) => {
     try {
       const { id } = req.params;
       const validatedData = insertProjectSchema.partial().parse(req.body);
@@ -117,7 +135,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/projects/:id", ensureAuthenticated, async (req, res) => {
+  app.delete("/api/projects/:id", async (req, res) => {
     try {
       const { id } = req.params;
       const deleted = await storage.deleteProject(id);
@@ -223,13 +241,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const lowerText = text.toLowerCase();
         let morphTargets: { [key: string]: number } = {};
 
-        // Base talking morphs if there is text
-        if (text.length > 0) {
-            morphTargets = {
-                jawOpen: 0.25, // Slightly open jaw for talking
-                mouthPucker: 0.1,
-            };
-        }
+  // Do not set jawOpen or mouthPucker at all
 
         // Emotion detection - can layer on top of talking morphs
         const emotionMap = [
@@ -247,7 +259,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             },
             {
                 keywords: ['wow', 'whoa', 'really', 'surprise', 'incredible'],
-                morphs: { eyeWideLeft: 0.5, eyeWideRight: 0.5, jawOpen: 0.4, browInnerUp: 0.6 }
+                morphs: { eyeWideLeft: 0.5, eyeWideRight: 0.5, browInnerUp: 0.6 }
             },
             {
                 keywords: ['curious', 'wonder', 'question', 'what', 'how', 'why', '?'],
@@ -273,35 +285,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const animation = getAnimationFromResponse(response);
       const morphTargets = getMorphTargetsFromResponse(response);
 
-      // Voice RSS Text-to-Speech
-      const voiceRSSApiKey = process.env.VOICE_RSS_API_KEY;
-      let audioContent = null;
-      let ttsError = null;
-
-      if (voiceRSSApiKey) {
-        try {
-          const ttsResponse = await fetch(`https://voicerss.org/api/?key=${voiceRSSApiKey}&hl=en-ca&v=Mason&c=MP3&f=48khz_16bit_stereo&src=${encodeURIComponent(response)}`);
-          if (ttsResponse.ok) {
-            const audioBuffer = await ttsResponse.arrayBuffer();
-            audioContent = Buffer.from(audioBuffer).toString('base64');
-          } else {
-            const errorText = await ttsResponse.text();
-            console.error("Voice RSS TTS API Error:", errorText);
-            // This is a specific error from VoiceRSS for invalid keys or other issues
-            if (errorText.includes("API key") || errorText.includes("Invalid")) {
-                ttsError = "The Voice RSS API key is invalid or missing. Please check your environment variables.";
-            } else {
-                ttsError = `TTS Error: ${errorText}`;
-            }
-          }
-        } catch (err) {
-          console.error("Network or other error during TTS request:", err);
-          ttsError = "Could not connect to the TTS service.";
-        }
-      } else {
-        console.warn("VOICE_RSS_API_KEY not set. Skipping TTS.");
-        ttsError = "Voice RSS API key is not set in the environment variables. Skipping TTS.";
-      }
+      // TTS moved to client-side, skip server TTS
+      const ttsError = null;
+      const audioContent = null;
 
       const metadata = { animation, morphTargets, ttsError };
       const metadataString = JSON.stringify(metadata);
@@ -317,7 +303,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         metadata: metadataString,
       });
 
-      res.json({ chatMessage, audioContent });
+      console.log('Sending response: audioContent present:', !!audioContent, 'ttsError:', ttsError);
+      res.json({ chatMessage, audioContent, ttsError });
     } catch (error) {
       console.error("Error processing chat message:", error);
       if (error instanceof z.ZodError) {
@@ -328,7 +315,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Prompt routes
-  app.post("/api/prompts", ensureAuthenticated, async (req, res) => {
+  app.post("/api/prompts", async (req, res) => {
     try {
       const validatedData = insertPromptSchema.parse(req.body);
       const prompt = await storage.createPrompt(validatedData);
@@ -350,7 +337,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.put("/api/prompts/:id", ensureAuthenticated, async (req, res) => {
+  app.put("/api/prompts/:id", async (req, res) => {
     try {
       const { id } = req.params;
       const validatedData = insertPromptSchema.partial().parse(req.body);
@@ -367,7 +354,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/prompts/:id", ensureAuthenticated, async (req, res) => {
+  app.delete("/api/prompts/:id", async (req, res) => {
     try {
       const { id } = req.params;
       const deleted = await storage.deletePrompt(id);

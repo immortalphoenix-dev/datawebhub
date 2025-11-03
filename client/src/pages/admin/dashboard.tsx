@@ -3,17 +3,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Prompt } from "@shared/schema";
 import { Loader2, Edit, Trash2 } from "lucide-react";
+import { account } from "@/lib/appwrite";
 
 export default function DashboardPage() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLoadingAuth, setIsLoadingAuth] = useState(true);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState(""); // Now holds merged description
   const [category, setCategory] = useState("web");
   const [technologies, setTechnologies] = useState("");
   const [imageFile, setImageFile] = useState<File | null>(null); // Reintroduced imageFile state
+  const [imageUrl, setImageUrl] = useState(""); // Direct image URL
   const [demoUrl, setDemoUrl] = useState("");
   const [isLoadingProject, setIsLoadingProject] = useState(false);
 
@@ -26,7 +30,24 @@ export default function DashboardPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // Fetch existing prompts
+  // Check authentication on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        await account.get();
+        setIsAuthenticated(true);
+      } catch (error) {
+        // User is not authenticated, redirect to login
+        window.location.href = "/admin/login";
+      } finally {
+        setIsLoadingAuth(false);
+      }
+    };
+
+    checkAuth();
+  }, []);
+
+  // Fetch existing prompts - must be called before any conditional returns
   const { data: prompts, isLoading: isLoadingPrompts, error: promptsError } = useQuery<Prompt[]>({
     queryKey: ["prompts"],
     queryFn: async () => {
@@ -38,6 +59,20 @@ export default function DashboardPage() {
     },
   });
 
+  // Show loading while checking authentication
+  if (isLoadingAuth) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin" />
+      </div>
+    );
+  }
+
+  // Don't render if not authenticated (will redirect)
+  if (!isAuthenticated) {
+    return null;
+  }
+
   const handleSubmitProject = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoadingProject(true);
@@ -47,7 +82,9 @@ export default function DashboardPage() {
     formData.append("description", description);
     formData.append("category", category);
     formData.append("technologies", technologies);
-    formData.append("demoUrl", demoUrl);
+    if (demoUrl.trim()) {
+      formData.append("demoUrl", demoUrl.trim());
+    }
     if (imageFile) {
       formData.append("image", imageFile);
     }
@@ -201,8 +238,8 @@ export default function DashboardPage() {
                 <Label htmlFor="category">Category</Label>
                 <select id="category" value={category} onChange={(e) => setCategory(e.target.value)} className="w-full p-2 border rounded-md">
                   <option value="web">Web</option>
-                  <option value="mobile">Mobile</option>
-                  <option value="design">Design</option>
+                  <option value="app">App</option>
+                  <option value="data analysis">Data Analysis</option>
                 </select>
               </div>
             </div>
@@ -215,12 +252,13 @@ export default function DashboardPage() {
               <Input id="technologies" value={technologies} onChange={(e) => setTechnologies(e.target.value)} required />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="imageFile">Image File</Label>
-              <Input id="imageFile" type="file" onChange={(e) => setImageFile(e.target.files ? e.target.files[0] : null)} />
+              <Label htmlFor="imageFile">Image File (Required)</Label>
+              <Input id="imageFile" type="file" onChange={(e) => setImageFile(e.target.files ? e.target.files[0] : null)} required />
+              <p className="text-sm text-muted-foreground">Upload an image for your project</p>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="demoUrl">Demo URL</Label>
-              <Input id="demoUrl" type="url" value={demoUrl} onChange={(e) => setDemoUrl(e.target.value)} />
+              <Label htmlFor="demoUrl">Demo URL (Optional)</Label>
+              <Input id="demoUrl" type="url" placeholder="https://your-demo-link.com" value={demoUrl} onChange={(e) => setDemoUrl(e.target.value)} />
             </div>
             <Button type="submit" disabled={isLoadingProject}>
               {isLoadingProject ? "Uploading..." : "Upload Project"}

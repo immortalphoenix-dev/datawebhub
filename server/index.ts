@@ -1,12 +1,18 @@
 import { config } from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import express, { type Request, Response, NextFunction } from "express";
+import compression from "compression";
+import helmet from "helmet";
+import session from "express-session";
+import { registerRoutes } from "./routes";
+import { setupVite, serveStatic, log } from "./vite";
+import { storage } from "./storage";
+import os from "node:os";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const envPath = resolve(__dirname, '../.env');
-
-
 
 // Pass the debug option to config
 const result = config({ path: envPath, debug: false });
@@ -15,69 +21,21 @@ if (result.error) {
   console.error('Error loading .env file:', result.error);
 }
 
-
-
-
-import express, { type Request, Response, NextFunction } from "express";
-import session from "express-session";
-import passport from "passport";
-import { Strategy as LocalStrategy } from "passport-local";
-import os from "node:os";
-import { registerRoutes } from "./routes";
-import { setupVite, serveStatic, log } from "./vite";
-import { storage } from "./storage";
-import { users } from "./lib/appwrite"; // Import Appwrite users service
-
 const app = express();
+app.use(helmet({
+  contentSecurityPolicy: false,
+}));
+app.use(compression());
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Session middleware
+// Session middleware (keep for potential future use)
 app.use(session({
   secret: process.env.SESSION_SECRET || "a-secret-key-for-sessions-that-is-long-and-secure",
   resave: false,
   saveUninitialized: false,
   cookie: { secure: app.get("env") === "production" },
 }));
-
-// Passport middleware
-app.use(passport.initialize());
-app.use(passport.session());
-
-// Passport configuration
-passport.use(new LocalStrategy(
-  async (username, password, done) => {
-    try {
-      // Use Appwrite to create a session, which also verifies the password
-      const session = await users.createSession(username, password);
-      const user = await storage.getUser(session.userId); // Get user details from storage
-
-      if (!user) {
-        // This case should ideally not happen if session creation was successful
-        return done(null, false, { message: "User not found after successful session creation." });
-      }
-      return done(null, user);
-    } catch (err: any) {
-      if (err.code === 401) { // Appwrite returns 401 for invalid credentials
-        return done(null, false, { message: "Incorrect username or password." });
-      }
-      return done(err);
-    }
-  }
-));
-
-passport.serializeUser((user: any, done) => {
-  done(null, user.id);
-});
-
-passport.deserializeUser(async (id: string, done) => {
-  try {
-    const user = await storage.getUser(id); // Corrected to getUser
-    done(null, user);
-  } catch (err) {
-    done(err);
-  }
-});
 
 app.use((req, res, next) => {
   const start = Date.now();

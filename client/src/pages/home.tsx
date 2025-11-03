@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { useScrollReveal } from "@/lib/animations";
 import { TypeAnimation } from "react-type-animation";
 import ProjectCard from "@/components/project-card";
-import { useFeaturedProjects } from "@/hooks/use-projects";
+import { useFeaturedProjects, prefetchProjects } from "@/hooks/use-projects";
 import ParticleBackground from "@/components/particle-background";
 
 export default function Home() {
@@ -39,7 +39,7 @@ export default function Home() {
 
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Link href="/projects">
-                <Button size="lg" data-testid="button-view-work">
+                <Button size="lg" data-testid="button-view-work" onMouseEnter={() => prefetchProjects()} onFocus={() => prefetchProjects()}>
                   <Rocket className="mr-2" />
                   View My Work
                 </Button>
@@ -81,7 +81,7 @@ export default function Home() {
             </div>
             <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
               {featuredProjects.slice(0, 3).map((project) => (
-                <ProjectCard key={project.id} project={project} />
+                <ProjectCard key={project.$id} project={project} />
               ))}
             </div>
           </div>

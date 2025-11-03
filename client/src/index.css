@@ -16,10 +16,10 @@
   --popover: hsl(210, 10%, 20%);
   --popover-foreground: hsl(0, 0%, 95%);
 
-  --primary: hsl(175, 70%, 45%); /* Vibrant Teal */
+  --primary: hsl(175, 70%, 45%);
   --primary-foreground: hsl(210, 10%, 15%);
 
-  --secondary: hsl(210, 10%, 23%); /* Darker background for avatar */
+  --secondary: hsl(210, 10%, 23%);
   --secondary-foreground: hsl(210, 10%, 15%);
 
   --muted: hsl(210, 10%, 25%);
@@ -36,11 +36,6 @@
   --ring: hsl(175, 70%, 45%);
 
   --radius: 0.75rem;
-}
-
-.dark {
-  /* The :root selector already defines the dark theme.
-     This class is kept for compatibility but can be removed if not needed. */
 }
 
 @layer base {
@@ -83,7 +78,7 @@
   }
 
   .project-card {
-    @apply transition-all duration-500 ease-out;
+    @apply transition-transform duration-500 ease-out;
   }
 
   .project-card:hover {
@@ -91,11 +86,16 @@
   }
 
   .scroll-reveal {
-    @apply opacity-0 translate-y-20 scale-95 transition-all duration-700 ease-out;
+    @apply transition-all duration-700 ease-out;
   }
 
-  .scroll-reveal.revealed {
+  .scroll-reveal.revealed,
+  .reveal-active {
     @apply opacity-100 translate-y-0;
+  }
+
+  .reveal-hidden {
+    @apply opacity-0 translate-y-20 scale-95;
   }
 
   .skill-bar {
@@ -114,40 +114,7 @@
   .animate-bounce-slow {
     animation: bounce 2s infinite;
   }
-}
 
-@keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(30px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes fadeIn {
-  from { 
-    opacity: 0; 
-  }
-  to { 
-    opacity: 1; 
-  }
-}
-
-@keyframes scaleIn {
-  from {
-    opacity: 0;
-    transform: scale(0.8);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@layer components {
   @media (max-width: 640px) {
     [data-testid="chat-messages"] .max-w-md {
       max-width: 100%;
@@ -164,12 +131,12 @@
     }
 
     [data-testid="chat-messages"] p {
-      font-size: 0.875rem; /* 14px */
-      line-height: 1.25rem; /* 20px */
+      font-size: 0.875rem;
+      line-height: 1.25rem;
     }
 
     [data-testid="input-chat-message"] {
-      height: 2.5rem; /* 40px */
+      height: 2.5rem;
       font-size: 0.875rem;
     }
 
@@ -177,5 +144,36 @@
       height: 2.5rem;
       width: 2.5rem;
     }
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
   }
 }

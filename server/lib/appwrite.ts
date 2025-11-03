@@ -11,7 +11,7 @@ if (result.error) {
   console.error('Error loading .env:', result.error);
 }
 
-import { Client, Databases, Users, Storage } from 'node-appwrite';
+import { Client, Databases, Users, Storage, Account } from 'node-appwrite';
 
 const endpoint = process.env.APPWRITE_ENDPOINT;
 const projectId = process.env.APPWRITE_PROJECT_ID;
@@ -30,8 +30,9 @@ client
 export const databases = new Databases(client);
 export const users = new Users(client);
 export const storageService = new Storage(client);
+export const account = new Account(client);
 
-export const DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
+export const DATABASE_ID = process.env.APPWRITE_DATABASE_ID!;
 
 if (!DATABASE_ID) {
     throw new Error('Appwrite database ID is required.');

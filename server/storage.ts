@@ -27,8 +27,8 @@ export interface IStorage {
   deletePrompt(id: string): Promise<boolean>;
 
   // File methods
-  uploadFile(file: File): Promise<string>;
-  getFileUrl(fileId: string): string;
+  uploadFile(file: any): Promise<string>;
+  getFileUrl(fileId: string): Promise<string>;
 }
 
 export class MemStorage implements IStorage {
@@ -64,20 +64,19 @@ export class MemStorage implements IStorage {
 
   async getProjects(): Promise<Project[]> {
     return Array.from(this.projects.values()).sort((a, b) => 
-      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      new Date(b.$createdAt).getTime() - new Date(a.$createdAt).getTime()
     );
   }
 
   async getProjectsByCategory(category: string): Promise<Project[]> {
     return Array.from(this.projects.values())
       .filter(project => project.category === category)
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      .sort((a, b) => new Date(b.$createdAt).getTime() - new Date(a.$createdAt).getTime());
   }
 
   async getFeaturedProjects(): Promise<Project[]> {
     return Array.from(this.projects.values())
-      .filter(project => project.featured === "true")
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      .sort((a, b) => new Date(b.$createdAt).getTime() - new Date(a.$createdAt).getTime());
   }
 
   async getProject(id: string): Promise<Project | undefined> {
@@ -87,17 +86,15 @@ export class MemStorage implements IStorage {
   async createProject(insertProject: InsertProject): Promise<Project> {
     const id = randomUUID();
     const project: Project = {
-      id,
+      $id: id,
       title: insertProject.title,
       description: insertProject.description,
-      longDescription: insertProject.longDescription || null,
       category: insertProject.category,
       technologies: insertProject.technologies,
       imageUrl: insertProject.imageUrl,
-      demoUrl: insertProject.demoUrl || null,
-      githubUrl: insertProject.githubUrl || null,
-      featured: insertProject.featured || "false",
-      createdAt: new Date()
+      demoUrl: insertProject.demoUrl,
+      $createdAt: new Date().toISOString(),
+      $updatedAt: new Date().toISOString()
     };
     this.projects.set(id, project);
     return project;
@@ -121,7 +118,7 @@ export class MemStorage implements IStorage {
     const messages = Array.from(this.chatMessages.values())
       .filter(message => message.sessionId === sessionId) // Add filtering
       .sort((a, b) => 
-        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        new Date(a.$createdAt).getTime() - new Date(b.$createdAt).getTime()
       );
     return messages;
   }
@@ -129,12 +126,13 @@ export class MemStorage implements IStorage {
   async createChatMessage(insertMessage: InsertChatMessage): Promise<ChatMessage> {
     const id = randomUUID();
     const message: ChatMessage = {
-      id,
+      $id: id,
       sessionId: insertMessage.sessionId,
       message: insertMessage.message,
       response: insertMessage.response,
       metadata: insertMessage.metadata || null,
-      createdAt: new Date()
+      $createdAt: new Date().toISOString(),
+      $updatedAt: new Date().toISOString()
     };
     this.chatMessages.set(id, message);
     return message;
@@ -182,13 +180,24 @@ export class MemStorage implements IStorage {
     return `http://localhost:5000/uploads/${file.name}`;
   }
 
-  getFileUrl(fileId: string): string {
+  getFileUrl(fileId: string): Promise<string> {
     // In-memory storage doesn't actually store files, just return a dummy URL
     console.warn("getFileUrl not implemented for MemStorage. Returning dummy URL.");
-    return `http://localhost:5000/uploads/${fileId}`;
+    return Promise.resolve(`http://localhost:5000/uploads/${fileId}`);
   }
 }
 
 import { AppwriteStorage } from './storage-appwrite';
 
-export const storage = new AppwriteStorage();
+const shouldUseMemoryStorage =
+  process.env.USE_MEM_STORAGE?.toLowerCase() === "true" ||
+  !process.env.APPWRITE_ENDPOINT ||
+  !process.env.APPWRITE_PROJECT_ID ||
+  !process.env.APPWRITE_API_KEY;
+
+export const storage: IStorage = shouldUseMemoryStorage
+  ? (() => {
+      console.warn("Using in-memory storage layer (Appwrite disabled). Set USE_MEM_STORAGE=false once Appwrite is reachable.");
+      return new MemStorage();
+    })()
+  : new AppwriteStorage();

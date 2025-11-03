@@ -19,7 +19,7 @@ export interface Project {
   description: string;
   category: string;
   technologies: string[];
-  imageUrl: string;
+  imageUrl?: string;
   demoUrl?: string;
   $createdAt: string; // Appwrite system attribute
   $updatedAt: string; // Appwrite system attribute
@@ -30,8 +30,9 @@ export interface InsertProject {
   description: string;
   category: string;
   technologies: string[];
-  imageUrl: string;
+  imageUrl?: string;
   demoUrl?: string;
+  createdAt?: string;
 }
 
 // Appwrite ChatMessage types
@@ -85,8 +86,9 @@ export const insertProjectSchema = z.object({
   description: z.string().min(1, "Description is required."),
   category: z.string().min(1, "Category is required."),
   technologies: z.array(z.string()).min(1, "At least one technology is required."),
-  imageUrl: z.string().url("Must be a valid URL."),
+  imageUrl: z.string().optional(), // Made optional since user uploads files
   demoUrl: z.string().url("Must be a valid URL.").optional().or(z.literal('')), // Allow empty string for optional URL
+  createdAt: z.string().datetime().default(() => new Date().toISOString()),
 });
 
 export const insertChatMessageSchema = z.object({

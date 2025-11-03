@@ -2,6 +2,7 @@ import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import type { Project } from "@shared/schema";
 import { Loader2, ExternalLink } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 
 async function fetchProject(id: string): Promise<Project> {
@@ -24,9 +25,21 @@ export default function ProjectDetail() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-12 h-12 animate-spin text-primary" />
-      </div>
+      <section className="py-24 sm:py-32">
+        <div className="container mx-auto px-6 lg:px-8 max-w-4xl space-y-6">
+          <div className="space-y-3">
+            <Skeleton className="h-10 w-2/3" />
+            <Skeleton className="h-5 w-full" />
+            <Skeleton className="h-5 w-5/6" />
+          </div>
+          <Skeleton className="h-80 w-full rounded-2xl" />
+          <div className="space-y-3">
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-11/12" />
+            <Skeleton className="h-4 w-10/12" />
+          </div>
+        </div>
+      </section>
     );
   }
 
@@ -67,6 +80,9 @@ export default function ProjectDetail() {
           src={project.imageUrl}
           alt={project.title}
           className="w-full rounded-2xl shadow-lg mb-12"
+          loading="lazy"
+          decoding="async"
+          sizes="(max-width: 1024px) 100vw, 800px"
         />
 
         <div className="prose prose-invert max-w-none">
