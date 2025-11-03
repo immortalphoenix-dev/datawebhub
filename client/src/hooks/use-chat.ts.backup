@@ -16,7 +16,7 @@ export function useChat() {
   const [visemeStartTime, setVisemeStartTime] = useState<number | null>(null);
   const synthesizerRef = useRef<any | null>(null);
 
-  // Granular loading states for better UX
+  // Granular loading states
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [isTtsProcessing, setIsTtsProcessing] = useState(false);
 
@@ -67,18 +67,101 @@ export function useChat() {
         });
       }
 
-      // Use Azure Speech SDK for TTS with viseme support
-      if (chatMessage.response && import.meta.env.VITE_AZURE_TTS_KEY && import.meta.env.VITE_AZURE_REGION) {
-  try {
+      // Handle server-side TTS audio and visemes
+      if (audioContent && chatMessage.response) {
+        try {
           // Show text early for responsiveness unless strict sync is requested
           if (!SYNC_TEXT_TO_AUDIO) {
             addMessageToCache();
           }
 
-          // Cancel any in-flight synthesis
-          if (synthesizerRef.current && typeof synthesizerRef.current.close === 'function') {
-            try { synthesizerRef.current.close(); } catch {}
+          // Convert base64 audio to ArrayBuffer if needed, or use directly
+          let audioBuffer: ArrayBuffer;
+          if (typeof audioContent === 'string') {
+            // Assume base64 encoded audio
+            const binaryString = atob(audioContent);
+            audioBuffer = new ArrayBuffer(binaryString.length);
+            const bytes = new Uint8Array(audioBuffer);
+            for (let i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+            }
+          } else {
+            audioBuffer = audioContent;
           }
+
+          // Get visemes from server metadata
+          const metadata = chatMessage.metadata ? JSON.parse(chatMessage.metadata) : {};
+          const serverVisemes = metadata.visemes || [];
+
+          // Play audio and sync visemes
+          const audioContext = new AudioContext();
+          audioContext.decodeAudioData(audioBuffer.slice(0), (buffer) => {
+            const source = audioContext.createBufferSource();
+            source.buffer = buffer;
+            source.connect(audioContext.destination);
+
+            // Set visemes and start time
+            setVisemes(serverVisemes);
+            setVisemeStartTime(Date.now());
+
+            if (SYNC_TEXT_TO_AUDIO && !messageAdded) {
+              addMessageToCache();
+              messageAdded = true;
+            }
+
+            source.onended = () => {
+              setVisemes([]);
+              setVisemeStartTime(null);
+              setIsTtsProcessing(false);
+            };
+
+            source.start(0);
+          }, (error) => {
+            console.error('Audio decode error:', error);
+            setIsTtsProcessing(false);
+            if (SYNC_TEXT_TO_AUDIO && !messageAdded) {
+              addMessageToCache();
+              messageAdded = true;
+            }
+          });
+
+        } catch (e) {
+          console.error("Error playing server audio:", e);
+          setIsTtsProcessing(false);
+          if (SYNC_TEXT_TO_AUDIO && !messageAdded) {
+            addMessageToCache();
+            messageAdded = true;
+          }
+        }
+      } else {
+        // No audio available, just show text
+        setIsTtsProcessing(false);
+        addMessageToCache();
+      }
+    },
+    onError: (err: Error) => {
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+              try {
+                const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
+                synthesizerRef.current = synthesizer;
+
+                return await new Promise((resolve, reject) => {
+                  synthesizer.speakTextAsync(text, (result: any) => {
+                    if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
+                      resolve(result);
+                    } else {
+                      reject(new Error(`Synthesis failed: ${result.errorDetails || 'Unknown error'}`));
+                    }
+                  });
+                });
+              } catch (error) {
+                console.warn(`TTS attempt ${attempt} failed:`, error);
+                if (attempt === maxRetries) throw error;
+                // Wait a bit before retrying
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              }
+            }
+          };
 
           // Dynamically import the SDK
           const loadSdk = () => import('microsoft-cognitiveservices-speech-sdk');
@@ -114,36 +197,60 @@ export function useChat() {
                 // Clear after speech finishes
                 setVisemes([]);
                 setVisemeStartTime(null);
+                setIsTtsProcessing(false);
                 if (synthesizerRef.current === synthesizer) {
                   synthesizerRef.current = null;
                 }
               };
 
-              console.log('Starting Azure TTS synthesis');
-              synthesizer.speakTextAsync(chatMessage.response!, (result: any) => {
-                console.log('Azure TTS synthesis completed');
-                if (result.reason !== sdk.ResultReason.SynthesizingAudioCompleted) {
-                  console.error("Speech synthesis failed:", result.errorDetails);
-                  track('tts_error', { reason: result.errorDetails || 'unknown' });
-                  toast({
-                    title: "TTS Error",
-                    description: "Failed to synthesize speech.",
-                    variant: "destructive",
-                  });
+              console.log('Starting Azure TTS synthesis with retry');
+              const speakWithRetry = async (text: string) => {
+                let lastError: any = null;
+                for (let attempt = 1; attempt <= 2; attempt++) {
+                  try {
+                    return await new Promise((resolve, reject) => {
+                      synthesizer.speakTextAsync(text, (result: any) => {
+                        if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
+                          resolve(result);
+                        } else {
+                          reject(new Error(result.errorDetails || 'Synthesis failed'));
+                        }
+                      });
+                    });
+                  } catch (error) {
+                    console.warn(`TTS attempt ${attempt} failed:`, error);
+                    lastError = error;
+                    if (attempt < 2) {
+                      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
+                    }
+                  }
+                }
+                throw lastError;
+              };
+
+              speakWithRetry(chatMessage.response!).then(() => {
+                console.log('Azure TTS synthesis completed successfully');
+                synthesizer.close();
+                // If, for any reason, audio start didn't fire, ensure text appears
+                setTimeout(() => {
                   if (SYNC_TEXT_TO_AUDIO && !messageAdded) {
                     addMessageToCache();
                     messageAdded = true;
                   }
-                } else {
-                  // If, for any reason, audio start didn't fire, ensure text appears
-                  setTimeout(() => {
-                    if (SYNC_TEXT_TO_AUDIO && !messageAdded) {
-                      addMessageToCache();
-                      messageAdded = true;
-                    }
-                  }, 200);
-                }
+                }, 200);
+              }).catch((error) => {
+                console.error("Speech synthesis failed after retries:", error);
                 synthesizer.close();
+                track('tts_error', { reason: String(error) });
+                toast({
+                  title: "TTS Error",
+                  description: "Failed to synthesize speech after retries.",
+                  variant: "destructive",
+                });
+                if (SYNC_TEXT_TO_AUDIO && !messageAdded) {
+                  addMessageToCache();
+                  messageAdded = true;
+                }
               });
             } catch (sdkErr) {
               console.error("Speech SDK use error:", sdkErr);

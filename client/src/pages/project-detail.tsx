@@ -85,11 +85,6 @@ export default function ProjectDetail() {
           sizes="(max-width: 1024px) 100vw, 800px"
         />
 
-        <div className="prose prose-invert max-w-none">
-          {/* longDescription was merged into description */}
-          <p>{project.description}</p>
-        </div>
-
         <div className="mt-12 flex flex-wrap gap-4">
           {project.demoUrl && (
             <Button asChild>

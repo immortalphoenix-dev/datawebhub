@@ -17,6 +17,8 @@ export default function Chat() {
     messages, 
     sendMessage, 
     isLoading, 
+    isAiProcessing,
+    isTtsProcessing,
     error,
     visemes,
     visemeStartTime
@@ -113,6 +115,8 @@ export default function Chat() {
               <ChatInterface
                 messages={messages}
                 isLoading={isLoading}
+                isAiProcessing={isAiProcessing}
+                isTtsProcessing={isTtsProcessing}
                 error={error || null}
               />
               

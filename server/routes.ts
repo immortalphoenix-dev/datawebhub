@@ -8,6 +8,84 @@ import multer from "multer";
 import Groq from "groq-sdk";
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Server-side TTS function
+async function generateServerSideTTS(text: string): Promise<{ audioBuffer: ArrayBuffer; visemes: { id: number; offset: number }[]; error?: string }> {
+  try {
+    // Dynamically import Azure Speech SDK
+    const sdk = await import('microsoft-cognitiveservices-speech-sdk');
+
+    const speechConfig = sdk.SpeechConfig.fromSubscription(
+      process.env.AZURE_TTS_KEY!,
+      process.env.AZURE_REGION!
+    );
+    speechConfig.speechSynthesisVoiceName = 'en-US-ChristopherNeural';
+
+    // Use memory stream for audio output
+    const audioConfig = sdk.AudioConfig.fromDefaultSpeakerOutput();
+    const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
+
+    return new Promise((resolve, reject) => {
+      const visemes: { id: number; offset: number }[] = [];
+
+      synthesizer.visemeReceived = (_s: any, e: any) => {
+        visemes.push({ id: e.visemeId, offset: e.audioOffset / 10000 });
+      };
+
+      synthesizer.speakTextAsync(text, (result: any) => {
+        synthesizer.close();
+
+        if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
+          resolve({
+            audioBuffer: result.audioData,
+            visemes: visemes
+          });
+        } else {
+          reject(new Error(result.errorDetails || 'TTS synthesis failed'));
+        }
+      });
+    });
+  } catch (error) {
+    console.error('Server-side TTS error:', error);
+    return {
+      audioBuffer: new ArrayBuffer(0),
+      visemes: [],
+      error: error instanceof Error ? error.message : 'Unknown TTS error'
+    };
+  }
+}
+
+// Simple in-memory cache for chat responses (LRU-style with max 100 entries)
+const responseCache = new Map<string, { response: string; timestamp: number }>();
+const MAX_CACHE_SIZE = 100;
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+function getCacheKey(message: string, prompts: any[]): string {
+  const promptHash = prompts.map(p => p.promptText).sort().join('|');
+  return `${message.trim().toLowerCase()}|${promptHash}`;
+}
+
+function getCachedResponse(key: string): string | null {
+  const cached = responseCache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.response;
+  }
+  if (cached) {
+    responseCache.delete(key); // Remove expired entry
+  }
+  return null;
+}
+
+function setCachedResponse(key: string, response: string): void {
+  if (responseCache.size >= MAX_CACHE_SIZE) {
+    // Remove oldest entry (simple FIFO)
+    const firstKey = responseCache.keys().next().value;
+    if (firstKey) {
+      responseCache.delete(firstKey);
+    }
+  }
+  responseCache.set(key, { response, timestamp: Date.now() });
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
   // Lightweight telemetry endpoint (fire-and-forget)
   app.post('/api/telemetry', (req, res) => {
@@ -182,16 +260,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         content: p.promptText,
       }));
 
-      const chatCompletion = await groq.chat.completions.create({
-        messages: [
-          ...systemPrompts,
-          { role: "user", content: message },
-        ],
-        model: "llama-3.1-8b-instant",
-      });
+      // Check cache for existing response
+      const cacheKey = getCacheKey(message, prompts || []);
+      const cachedResponse = getCachedResponse(cacheKey);
+      let response: string;
 
-      const response = chatCompletion.choices[0]?.message?.content || "I'm sorry, I couldn't generate a response.";
-      console.log('Groq response:', response);
+      if (cachedResponse) {
+        console.log('Using cached response for:', message);
+        response = cachedResponse;
+      } else {
+        const groq = new Groq({
+          apiKey: process.env.GROQ_API_KEY,
+        });
+
+        const chatCompletion = await groq.chat.completions.create({
+          messages: [
+            ...systemPrompts,
+            { role: "user", content: message },
+          ],
+          model: "llama-3.1-70b-instant",
+        });
+
+        response = chatCompletion.choices[0]?.message?.content || "I'm sorry, I couldn't generate a response.";
+        console.log('Groq response:', response);
+
+        // Cache the response for future use
+        setCachedResponse(cacheKey, response);
+      }
+
       console.log('Groq response type:', typeof response);
 
       // Function to determine animation based on response content
@@ -285,11 +381,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const animation = getAnimationFromResponse(response);
       const morphTargets = getMorphTargetsFromResponse(response);
 
-      // TTS moved to client-side, skip server TTS
-      const ttsError = null;
-      const audioContent = null;
+      // Generate server-side TTS
+      console.log('Generating server-side TTS...');
+      const ttsResult = await generateServerSideTTS(response);
+      const audioContent = ttsResult.error ? null : ttsResult.audioBuffer;
+      const ttsError = ttsResult.error || null;
 
-      const metadata = { animation, morphTargets, ttsError };
+      // Include visemes in metadata
+      const metadata = {
+        animation,
+        morphTargets,
+        visemes: ttsResult.visemes,
+        ttsError
+      };
       const metadataString = JSON.stringify(metadata);
       console.log('Metadata string:', metadataString, 'Length:', metadataString.length);
       if (metadataString.length > 500) {
@@ -303,7 +407,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         metadata: metadataString,
       });
 
-      console.log('Sending response: audioContent present:', !!audioContent, 'ttsError:', ttsError);
+      console.log('Sending response: audioContent present:', !!audioContent, 'ttsError:', ttsError, 'visemes count:', ttsResult.visemes.length);
       res.json({ chatMessage, audioContent, ttsError });
     } catch (error) {
       console.error("Error processing chat message:", error);

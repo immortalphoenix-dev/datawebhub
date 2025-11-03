@@ -5,10 +5,12 @@ import type { ChatMessage } from "@shared/schema";
 interface ChatInterfaceProps {
   messages: ChatMessage[];
   isLoading: boolean;
+  isAiProcessing?: boolean;
+  isTtsProcessing?: boolean;
   error: string | null;
 }
 
-export default function ChatInterface({ messages, isLoading, error }: ChatInterfaceProps) {
+export default function ChatInterface({ messages, isLoading, isAiProcessing, isTtsProcessing, error }: ChatInterfaceProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastUserMessageRef = useRef<HTMLDivElement>(null);
 
@@ -92,10 +94,15 @@ export default function ChatInterface({ messages, isLoading, error }: ChatInterf
             <Bot className="w-4 h-4 sm:w-5 sm:h-5 text-secondary-foreground" />
           </div>
           <div className="bg-muted rounded-2xl rounded-tl-none px-3 py-2 sm:px-4 sm:py-2.5 max-w-[80%] sm:max-w-sm">
-            <div className="flex space-x-1.5">
-              <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-muted-foreground/50 rounded-full animate-bounce"></div>
-              <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-              <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+            <div className="flex items-center space-x-2">
+              <div className="flex space-x-1.5">
+                <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-muted-foreground/50 rounded-full animate-bounce"></div>
+                <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-muted-foreground/50 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+              </div>
+              <span className="text-xs sm:text-sm text-muted-foreground">
+                {isAiProcessing ? 'AI is thinking...' : isTtsProcessing ? 'Generating speech...' : 'Processing...'}
+              </span>
             </div>
           </div>
         </div>
