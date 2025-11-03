@@ -1,3 +1,0 @@
-
-> rest-express@1.0.0 dev
-> cross-env NODE_ENV=development node --import tsx server/index.ts
