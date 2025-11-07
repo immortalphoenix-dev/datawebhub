@@ -59,9 +59,10 @@ const responseCache = new Map<string, { response: string; timestamp: number }>()
 const MAX_CACHE_SIZE = 100;
 const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
-function getCacheKey(message: string, prompts: any[]): string {
+function getCacheKey(message: string, prompts: any[], model: string = ""): string {
   const promptHash = prompts.map(p => p.promptText).sort().join('|');
-  return `${message.trim().toLowerCase()}|${promptHash}`;
+  const modelPart = model ? `|model:${model}` : '';
+  return `${message.trim().toLowerCase()}|${promptHash}${modelPart}`;
 }
 
 function getCachedResponse(key: string): string | null {
@@ -260,35 +261,62 @@ export async function registerRoutes(app: Express): Promise<Server> {
         content: p.promptText,
       }));
 
-      // Check cache for existing response
-      const cacheKey = getCacheKey(message, prompts || []);
+      // Model selection with fallback
+      const primaryModel = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
+      const fallbackModels = ["llama-3.1-8b-instant", "llama-3.2-3b-preview", "llama-3.1-70b-versatile"].filter(m => m !== primaryModel);
+      const tried: string[] = [];
+      let usedModel = primaryModel;
+
+      const cacheKey = getCacheKey(message, prompts || [], primaryModel);
       const cachedResponse = getCachedResponse(cacheKey);
-      let response: string;
+      let response: string = '';
+
+      const attempt = async (model: string): Promise<string> => {
+        tried.push(model);
+        try {
+          const chatCompletion = await groq.chat.completions.create({
+            messages: [
+              ...systemPrompts,
+              { role: "user", content: message },
+            ],
+            model,
+          });
+          return chatCompletion.choices[0]?.message?.content || "I'm sorry, I couldn't generate a response.";
+        } catch (err: any) {
+          const code = err?.error?.error?.code || err?.error?.code;
+          if (code === 'model_not_found') {
+            console.warn('[chat] model not found:', model);
+            throw new Error('MODEL_NOT_FOUND');
+          }
+          console.error('[chat] model error', model, err?.message || err);
+          throw err;
+        }
+      };
 
       if (cachedResponse) {
-        console.log('Using cached response for:', message);
+        console.log('[chat] using cache for model', primaryModel);
         response = cachedResponse;
       } else {
-        const groq = new Groq({
-          apiKey: process.env.GROQ_API_KEY,
-        });
-
-        const chatCompletion = await groq.chat.completions.create({
-          messages: [
-            ...systemPrompts,
-            { role: "user", content: message },
-          ],
-          model: "llama-3.1-70b-instant",
-        });
-
-        response = chatCompletion.choices[0]?.message?.content || "I'm sorry, I couldn't generate a response.";
-        console.log('Groq response:', response);
-
-        // Cache the response for future use
+        let success = false;
+        for (const model of [primaryModel, ...fallbackModels]) {
+          try {
+            response = await attempt(model);
+            usedModel = model;
+            success = true;
+            break;
+          } catch (e: any) {
+            if (e.message !== 'MODEL_NOT_FOUND') {
+              return res.status(500).json({ message: 'Failed to process chat message', error: e.message });
+            }
+          }
+        }
+        if (!success) {
+          return res.status(500).json({ message: 'No usable model available (all fallbacks failed).' });
+        }
         setCachedResponse(cacheKey, response);
       }
 
-      console.log('Groq response type:', typeof response);
+      console.log('[chat] response type:', typeof response, 'model used:', usedModel, 'tried:', tried.join(','));
 
       // Function to determine animation based on response content
       const getAnimationFromResponse = (text: string) => {
