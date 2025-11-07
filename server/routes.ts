@@ -9,19 +9,27 @@ import Groq from "groq-sdk";
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Server-side TTS function
-async function generateServerSideTTS(text: string): Promise<{ audioBuffer: ArrayBuffer; visemes: { id: number; offset: number }[]; error?: string }> {
+// Returns base64-encoded audio and visemes (offsets in ms relative to audio start)
+async function generateServerSideTTS(text: string): Promise<{ audioBase64: string | null; visemes: { id: number; offset: number }[]; error?: string }> {
   try {
     // Dynamically import Azure Speech SDK
     const sdk = await import('microsoft-cognitiveservices-speech-sdk');
 
+    const speechKey = process.env.AZURE_TTS_KEY || process.env.VITE_AZURE_TTS_KEY;
+    const speechRegion = process.env.AZURE_REGION || process.env.VITE_AZURE_REGION;
+    if (!speechKey || !speechRegion) {
+      return { audioBase64: null, visemes: [], error: 'Azure TTS credentials missing' };
+    }
+
     const speechConfig = sdk.SpeechConfig.fromSubscription(
-      process.env.AZURE_TTS_KEY!,
-      process.env.AZURE_REGION!
+      speechKey,
+      speechRegion
     );
     speechConfig.speechSynthesisVoiceName = 'en-US-ChristopherNeural';
 
-    // Use memory stream for audio output
-    const audioConfig = sdk.AudioConfig.fromDefaultSpeakerOutput();
+    // Use an in-memory stream so we can capture audio bytes
+    const stream = sdk.AudioOutputStream.createPullStream();
+    const audioConfig = sdk.AudioConfig.fromStreamOutput(stream);
     const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
 
     return new Promise((resolve, reject) => {
@@ -35,9 +43,10 @@ async function generateServerSideTTS(text: string): Promise<{ audioBuffer: Array
         synthesizer.close();
 
         if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
+          const audioBase64 = Buffer.from(result.audioData).toString('base64');
           resolve({
-            audioBuffer: result.audioData,
-            visemes: visemes
+            audioBase64,
+            visemes
           });
         } else {
           reject(new Error(result.errorDetails || 'TTS synthesis failed'));
@@ -47,7 +56,7 @@ async function generateServerSideTTS(text: string): Promise<{ audioBuffer: Array
   } catch (error) {
     console.error('Server-side TTS error:', error);
     return {
-      audioBuffer: new ArrayBuffer(0),
+      audioBase64: null,
       visemes: [],
       error: error instanceof Error ? error.message : 'Unknown TTS error'
     };
@@ -411,9 +420,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Generate server-side TTS
       console.log('Generating server-side TTS...');
-      const ttsResult = await generateServerSideTTS(response);
-      const audioContent = ttsResult.error ? null : ttsResult.audioBuffer;
-      const ttsError = ttsResult.error || null;
+  const ttsResult = await generateServerSideTTS(response);
+  const audioContent = ttsResult.error ? null : ttsResult.audioBase64;
+  const ttsError = ttsResult.error || null;
 
       // Include visemes in metadata
       const metadata = {
@@ -435,7 +444,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         metadata: metadataString,
       });
 
-      console.log('Sending response: audioContent present:', !!audioContent, 'ttsError:', ttsError, 'visemes count:', ttsResult.visemes.length);
+  console.log('Sending response: audio present:', !!audioContent, 'ttsError:', ttsError, 'visemes count:', ttsResult.visemes.length);
       res.json({ chatMessage, audioContent, ttsError });
     } catch (error) {
       console.error("Error processing chat message:", error);

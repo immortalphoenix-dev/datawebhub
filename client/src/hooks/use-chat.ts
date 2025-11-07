@@ -67,106 +67,58 @@ export function useChat() {
         });
       }
 
-      // Use Azure Speech SDK for TTS with viseme support
-      if (chatMessage.response && import.meta.env.VITE_AZURE_TTS_KEY && import.meta.env.VITE_AZURE_REGION) {
-  try {
-          // Show text early for responsiveness unless strict sync is requested
-          if (!SYNC_TEXT_TO_AUDIO) {
-            addMessageToCache();
-          }
+      // Client now only plays server-provided audio for sync
+      if (audioContent) {
+        try {
+          // Decode server-provided base64 audio and play
+          const byteString = atob(audioContent);
+          const buffer = new ArrayBuffer(byteString.length);
+          const bytes = new Uint8Array(buffer);
+          for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i);
 
-          // Cancel any in-flight synthesis
-          if (synthesizerRef.current && typeof synthesizerRef.current.close === 'function') {
-            try { synthesizerRef.current.close(); } catch {}
-          }
+          const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+          audioCtx.decodeAudioData(buffer.slice(0)).then(decoded => {
+            const source = audioCtx.createBufferSource();
+            source.buffer = decoded;
+            source.connect(audioCtx.destination);
 
-          // Dynamically import the SDK
-          const loadSdk = () => import('microsoft-cognitiveservices-speech-sdk');
-          loadSdk().then((sdk) => {
+            // Extract visemes from metadata if present for precise sync
+            let serverVisemes: { id: number; offset: number }[] = [];
             try {
-              const speechConfig = sdk.SpeechConfig.fromSubscription(import.meta.env.VITE_AZURE_TTS_KEY, import.meta.env.VITE_AZURE_REGION);
-              speechConfig.speechSynthesisVoiceName = 'en-US-ChristopherNeural';
+              if (chatMessage.metadata) {
+                const meta = JSON.parse(chatMessage.metadata);
+                if (Array.isArray(meta.visemes)) serverVisemes = meta.visemes;
+              }
+            } catch {}
 
-              // Create a controllable speaker destination so we know EXACTLY when audio playback starts
-              const player = new sdk.SpeakerAudioDestination();
-              const audioConfig = sdk.AudioConfig.fromSpeakerOutput(player);
-              const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
-              synthesizerRef.current = synthesizer;
+            source.onended = () => {
+              setVisemes([]);
+              setVisemeStartTime(null);
+              setIsTtsProcessing(false);
+            };
 
-              const visemeList: { id: number; offset: number }[] = [];
-              let messageAdded = false;
-
-              synthesizer.visemeReceived = (_s: any, e: any) => {
-                // e.audioOffset is in 100-nanosecond units; convert to milliseconds
-                visemeList.push({ id: e.visemeId, offset: e.audioOffset / 10000 });
-              };
-
-              // Align UI text, visemes, and audio start together
-              player.onAudioStart = () => {
-                setVisemes(visemeList);
-                setVisemeStartTime(Date.now());
-                if (SYNC_TEXT_TO_AUDIO && !messageAdded) {
-                  addMessageToCache();
-                  messageAdded = true;
-                }
-              };
-              player.onAudioEnd = () => {
-                // Clear after speech finishes
-                setVisemes([]);
-                setVisemeStartTime(null);
-                if (synthesizerRef.current === synthesizer) {
-                  synthesizerRef.current = null;
-                }
-              };
-
-              console.log('Starting Azure TTS synthesis');
-              synthesizer.speakTextAsync(chatMessage.response!, (result: any) => {
-                console.log('Azure TTS synthesis completed');
-                if (result.reason !== sdk.ResultReason.SynthesizingAudioCompleted) {
-                  console.error("Speech synthesis failed:", result.errorDetails);
-                  track('tts_error', { reason: result.errorDetails || 'unknown' });
-                  toast({
-                    title: "TTS Error",
-                    description: "Failed to synthesize speech.",
-                    variant: "destructive",
-                  });
-                  if (SYNC_TEXT_TO_AUDIO && !messageAdded) {
-                    addMessageToCache();
-                    messageAdded = true;
-                  }
-                } else {
-                  // If, for any reason, audio start didn't fire, ensure text appears
-                  setTimeout(() => {
-                    if (SYNC_TEXT_TO_AUDIO && !messageAdded) {
-                      addMessageToCache();
-                      messageAdded = true;
-                    }
-                  }, 200);
-                }
-                synthesizer.close();
-              });
-            } catch (sdkErr) {
-              console.error("Speech SDK use error:", sdkErr);
+            // Start audio & viseme clock exactly together
+            setVisemes(serverVisemes);
+            setVisemeStartTime(performance.now());
+            if (!SYNC_TEXT_TO_AUDIO) {
               addMessageToCache();
+            } else {
+              addMessageToCache(); // server-side already synchronized
             }
-          }).catch((importErr) => {
-            console.error("Failed to import speech SDK:", importErr);
-            track('tts_error', { reason: 'sdk_import_failed', error: String(importErr) });
+            source.start();
+          }).catch(err => {
+            console.error('Audio decode failed', err);
+            setIsTtsProcessing(false);
             addMessageToCache();
           });
-        } catch (e) {
-          console.error("Error initializing speech synthesizer:", e);
-          track('tts_error', { reason: 'init_error', error: String(e) });
-          toast({
-            title: "TTS Error",
-            description: "Could not initialize text-to-speech.",
-            variant: "destructive",
-          });
-          // Fall back to showing text immediately
+        } catch (err) {
+          console.error('Audio playback failed', err);
+          setIsTtsProcessing(false);
           addMessageToCache();
         }
-      } else if (audioContent) {
-        // No Azure TTS available - show text immediately
+      } else {
+        // No audio returned, just show text
+        setIsTtsProcessing(false);
         addMessageToCache();
       }
     },
