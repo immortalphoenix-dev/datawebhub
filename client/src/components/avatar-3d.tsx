@@ -23,28 +23,28 @@ const Model = forwardRef<ModelHandle, ModelProps>(({ currentAnimation, currentMo
   const { scene, animations } = useGLTF('/src/assets/my-avatar-.glb');
 
     const visemeMappings: { [key: number]: { [key: string]: number } } = {
-    0: { sil: 1.0 }, // silence
-    1: { aa: 1.0 }, // æ, ə, ʌ - ah sounds
-    2: { ih: 1.0 }, // aɪ - eye sound
-    3: { ou: 1.0 }, // aʊ - ow sound
-    4: { oh: 1.0 }, // ɔ - aw sound
-    5: { E: 1.0 }, // ɛ - eh sound
-    6: { RR: 1.0 }, // ɝ - er sound
-    7: { ih: 1.0 }, // i - ee sound
-    8: { oh: 1.0 }, // oʊ - oh sound
-    9: { ou: 1.0 }, // u - oo sound
-    10: { aa: 1.0 }, // ɑ - ah sound
-    11: { E: 1.0 }, // eɪ - ay sound
-    12: { PP: 1.0 }, // b, m, p - p sound
-    13: { DD: 1.0 }, // d, n, t - d/t sounds (using DD as primary)
-    14: { FF: 1.0 }, // f, v - f sound
-    15: { kk: 1.0 }, // g, k, ŋ - k/g sounds
-    16: { sil: 1.0 }, // h - breathy, use silence
-    17: { CH: 1.0 }, // dʒ, ʃ, tʃ, ʒ - ch/sh sounds
-    18: { RR: 1.0 }, // l - l sound (similar to r)
-    19: { RR: 1.0 }, // r - r sound
-    20: { SS: 1.0 }, // s, z - s sound
-    21: { TH: 1.0 }, // θ, ð - th sound
+    0: {}, // silence - no morph targets, mouth stays closed
+    1: { mouthOpen: 0.8, mouthA: 0.6 }, // æ, ə, ʌ - ah sounds
+    2: { mouthWide: 0.7, mouthSmileOpen: 0.4 }, // aɪ - eye sound
+    3: { mouthRound: 0.6, mouthO: 0.4 }, // aʊ - ow sound
+    4: { mouthO: 0.8, mouthRound: 0.5 }, // ɔ - aw sound
+    5: { mouthNarrow: 0.6, mouthSmileOpen: 0.3 }, // ɛ - eh sound
+    6: { mouthFunnel: 0.7 }, // ɝ - er sound
+    7: { mouthWide: 0.8, mouthSmileOpen: 0.5 }, // i - ee sound
+    8: { mouthO: 0.7, mouthRound: 0.6 }, // oʊ - oh sound
+    9: { mouthRound: 0.8, mouthU: 0.5 }, // u - oo sound
+    10: { mouthOpen: 0.9, mouthA: 0.7 }, // ɑ - ah sound
+    11: { mouthWide: 0.6, mouthSmileOpen: 0.4 }, // eɪ - ay sound
+    12: { mouthPucker: 0.8 }, // b, m, p - p sound
+    13: { mouthNarrow: 0.7 }, // d, n, t - d/t sounds
+    14: { mouthFunnel: 0.6 }, // f, v - f sound
+    15: { mouthNarrow: 0.8 }, // g, k, ŋ - k/g sounds
+    16: {}, // h - breathy, treat as silence
+    17: { mouthNarrow: 0.9, mouthFunnel: 0.4 }, // dʒ, ʃ, tʃ, ʒ - ch/sh sounds
+    18: { mouthWide: 0.5 }, // l - l sound
+    19: { mouthFunnel: 0.8 }, // r - r sound
+    20: { mouthNarrow: 0.8 }, // s, z - s sound
+    21: { mouthNarrow: 0.7, mouthFunnel: 0.3 }, // θ, ð - th sound
   };
   const { actions, mixer } = useAnimations(animations, group);
   const clock = new THREE.Clock();
@@ -83,6 +83,13 @@ const Model = forwardRef<ModelHandle, ModelProps>(({ currentAnimation, currentMo
   useEffect(() => {
     visemeStartTimeRef.current = visemeStartTimeProp ?? null;
   }, [visemeStartTimeProp]);
+
+  // Debug: Log visemes when they change
+  useEffect(() => {
+    if (visemes && visemes.length > 0) {
+      console.log('Received visemes:', visemes);
+    }
+  }, [visemes]);
 
   // Effect to play animation when currentAnimation prop changes
   useEffect(() => {
@@ -143,7 +150,7 @@ const Model = forwardRef<ModelHandle, ModelProps>(({ currentAnimation, currentMo
       // 2. Handle viseme-based lip sync if visemes are provided
       let visemeApplied = false;
       if (visemes && visemes.length > 0 && visemeStartTimeRef.current) {
-        const elapsed = (Date.now() - visemeStartTimeRef.current);
+        const elapsed = performance.now() - visemeStartTimeRef.current;
         // Find current viseme
         let currentViseme = visemes[0];
         for (let i = 0; i < visemes.length; i++) {
@@ -153,13 +160,21 @@ const Model = forwardRef<ModelHandle, ModelProps>(({ currentAnimation, currentMo
             break;
           }
         }
+        // Debug: Log current viseme
+        if (Math.floor(elapsed / 100) % 10 === 0) { // Log every ~1 second
+          console.log('Current viseme at', elapsed, 'ms:', currentViseme);
+        }
         // Apply viseme morphs
         if (headMesh.current.morphTargetDictionary && headMesh.current.morphTargetInfluences) {
           const morphs = visemeMappings[currentViseme.id] || {};
+          console.log('Applying viseme', currentViseme.id, 'with morphs:', morphs);
           for (const [morph, value] of Object.entries(morphs)) {
             const index = headMesh.current.morphTargetDictionary[morph];
             if (index !== undefined) {
               headMesh.current.morphTargetInfluences[index] = value;
+              console.log('Set morph target', morph, 'to', value);
+            } else {
+              console.log('Morph target', morph, 'not found in dictionary');
             }
           }
         }
@@ -321,6 +336,8 @@ export default function Avatar3D({ currentAnimation, currentMorphTargets, viseme
   const modelRef = useRef<ModelHandle>(null);
   const [location] = useLocation();
   const [isMobile, setIsMobile] = useState(false);
+
+  console.log('Avatar3D received props - visemes:', visemes, 'visemeStartTime:', visemeStartTime);
 
   // Detect mobile screen size
   useEffect(() => {

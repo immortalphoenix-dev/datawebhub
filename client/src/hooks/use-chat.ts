@@ -48,7 +48,7 @@ export function useChat() {
     },
     onSuccess: (data: { chatMessage: ChatMessage, audioContent: string | null, ttsError?: string | null }) => {
       setIsAiProcessing(false);
-      setIsTtsProcessing(true);
+      setIsTtsProcessing(!!data.audioContent); // Only show TTS processing if we have audio
       const { chatMessage, audioContent, ttsError } = data;
       // Helper to add message to cache (either immediately or aligned with audio start)
       const addMessageToCache = () => {
@@ -88,6 +88,7 @@ export function useChat() {
               if (chatMessage.metadata) {
                 const meta = JSON.parse(chatMessage.metadata);
                 if (Array.isArray(meta.visemes)) serverVisemes = meta.visemes;
+                console.log('Extracted visemes from metadata:', serverVisemes);
               }
             } catch {}
 

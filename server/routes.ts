@@ -6,59 +6,152 @@ import { z } from "zod";
 import type { Request, Response, NextFunction } from "express";
 import multer from "multer";
 import Groq from "groq-sdk";
+import * as sdk from "microsoft-cognitiveservices-speech-sdk";
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Server-side TTS function
-// Returns base64-encoded audio and visemes (offsets in ms relative to audio start)
-async function generateServerSideTTS(text: string): Promise<{ audioBase64: string | null; visemes: { id: number; offset: number }[]; error?: string }> {
-  try {
-    // Dynamically import Azure Speech SDK
-    const sdk = await import('microsoft-cognitiveservices-speech-sdk');
+// In-memory cache for Azure TTS audio to keep things fast and avoid duplicate syntheses
+const azureTTSCache = new Map<string, { base64: string; visemes: { id: number; offset: number }[]; timestamp: number }>();
+const AZURE_TTS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const AZURE_TTS_CACHE_MAX = 50; // max entries
 
-    const speechKey = process.env.AZURE_TTS_KEY || process.env.VITE_AZURE_TTS_KEY;
-    const speechRegion = process.env.AZURE_REGION || process.env.VITE_AZURE_REGION;
-    if (!speechKey || !speechRegion) {
-      return { audioBase64: null, visemes: [], error: 'Azure TTS credentials missing' };
+function getAzureTTSCacheKey(text: string, voice: string) {
+  return `${voice}|${text.trim().toLowerCase()}`;
+}
+
+// Fallback viseme generation based on basic text analysis
+function generateFallbackVisemes(text: string): { id: number; offset: number }[] {
+  const visemes: { id: number; offset: number }[] = [];
+  const words = text.toLowerCase().split(/\s+/);
+  let currentOffset = 0;
+  const avgWordDuration = 300; // ms per word estimate
+
+  for (const word of words) {
+    // Start with silence
+    visemes.push({ id: 0, offset: currentOffset });
+    currentOffset += 50;
+
+    // Analyze each character for basic phoneme mapping
+    for (let i = 0; i < word.length; i++) {
+      const char = word[i];
+      let visemeId = 0; // default silence
+
+      // Basic vowel mapping
+      if ('aeiou'.includes(char)) {
+        if ('a'.includes(char)) visemeId = 1; // ah sound
+        else if ('ei'.includes(char)) visemeId = 2; // ee sound
+        else if ('o'.includes(char)) visemeId = 4; // oh sound
+        else if ('u'.includes(char)) visemeId = 9; // oo sound
+      }
+      // Basic consonant mapping
+      else if ('pb'.includes(char)) visemeId = 12; // p/b sound
+      else if ('dt'.includes(char)) visemeId = 13; // d/t sound
+      else if ('fv'.includes(char)) visemeId = 14; // f/v sound
+      else if ('kg'.includes(char)) visemeId = 15; // k/g sound
+      else if ('sz'.includes(char)) visemeId = 20; // s/z sound
+      else if ('th'.includes(char)) visemeId = 21; // th sound
+      else if ('lr'.includes(char)) visemeId = 19; // r/l sound
+      else if ('m'.includes(char)) visemeId = 12; // m sound (like p)
+      else if ('n'.includes(char)) visemeId = 13; // n sound (like d)
+      else if ('jchsh'.includes(char)) visemeId = 17; // ch/sh sounds
+
+      visemes.push({ id: visemeId, offset: currentOffset });
+      currentOffset += 80; // ~80ms per phoneme
     }
 
+    // End with silence
+    visemes.push({ id: 0, offset: currentOffset });
+    currentOffset += avgWordDuration - (word.length * 80) - 100; // Adjust for word timing
+  }
+
+  return visemes;
+}
+
+// Azure TTS function with male voice and caching
+async function generateAzureTTS(text: string): Promise<{ audioBase64: string | null; visemes: { id: number; offset: number }[]; error?: string }> {
+  // Use male voice
+  const voice = 'en-US-ChristopherNeural'; // Male voice
+  const key = getAzureTTSCacheKey(text, voice);
+
+  // Check cache
+  const cached = azureTTSCache.get(key);
+  if (cached && Date.now() - cached.timestamp < AZURE_TTS_CACHE_TTL) {
+    return { audioBase64: cached.base64, visemes: cached.visemes };
+  }
+
+  try {
     const speechConfig = sdk.SpeechConfig.fromSubscription(
-      speechKey,
-      speechRegion
+      process.env.VITE_AZURE_TTS_KEY!,
+      process.env.VITE_AZURE_REGION!
     );
-    speechConfig.speechSynthesisVoiceName = 'en-US-ChristopherNeural';
 
-    // Use an in-memory stream so we can capture audio bytes
-    const stream = sdk.AudioOutputStream.createPullStream();
-    const audioConfig = sdk.AudioConfig.fromStreamOutput(stream);
-    const synthesizer = new sdk.SpeechSynthesizer(speechConfig, audioConfig);
+    // Configure voice and output format
+    speechConfig.speechSynthesisVoiceName = voice;
+    speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
 
-    return new Promise((resolve, reject) => {
-      const visemes: { id: number; offset: number }[] = [];
+    const synthesizer = new sdk.SpeechSynthesizer(speechConfig);
 
-      synthesizer.visemeReceived = (_s: any, e: any) => {
-        visemes.push({ id: e.visemeId, offset: e.audioOffset / 10000 });
-      };
+    // Collect visemes during synthesis
+    const visemes: { id: number; offset: number }[] = [];
 
-      synthesizer.speakTextAsync(text, (result: any) => {
-        synthesizer.close();
-
-        if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
-          const audioBase64 = Buffer.from(result.audioData).toString('base64');
-          resolve({
-            audioBase64,
-            visemes
-          });
-        } else {
-          reject(new Error(result.errorDetails || 'TTS synthesis failed'));
-        }
+    synthesizer.visemeReceived = (s, e) => {
+      console.log('Viseme received:', e.visemeId, 'at offset:', e.audioOffset);
+      visemes.push({
+        id: e.visemeId,
+        offset: e.audioOffset / 10000 // Convert from ticks (100ns) to milliseconds
       });
+    };
+
+    const audioBuffer = await new Promise<Buffer>((resolve, reject) => {
+      synthesizer.speakTextAsync(
+        text,
+        (result) => {
+          synthesizer.close();
+          console.log(`Generated ${visemes.length} visemes for text: "${text}"`);
+
+          // Fallback: if no visemes were captured, generate basic ones based on text
+          if (visemes.length === 0) {
+            console.log('No visemes captured from Azure, generating fallback visemes');
+            visemes.push(...generateFallbackVisemes(text));
+          }
+
+          if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
+            const audioData = result.audioData;
+            const audioBase64 = Buffer.from(audioData).toString('base64');
+            resolve(Buffer.from(audioData));
+          } else {
+            const error = `Speech synthesis failed: ${result.errorDetails}`;
+            console.error('Azure TTS error:', error);
+            reject(new Error(error));
+          }
+        },
+        (error: any) => {
+          synthesizer.close();
+          console.error('Azure TTS error:', error);
+          reject(error instanceof Error ? error : new Error('Unknown Azure TTS error'));
+        }
+      );
     });
+
+    if (!audioBuffer || audioBuffer.length === 0) {
+      throw new Error('No audio data received from Azure TTS');
+    }
+
+    const audioBase64 = audioBuffer.toString('base64');
+
+    // Maintain cache size
+    if (azureTTSCache.size >= AZURE_TTS_CACHE_MAX) {
+      const firstKey = azureTTSCache.keys().next().value;
+      if (firstKey) azureTTSCache.delete(firstKey);
+    }
+    azureTTSCache.set(key, { base64: audioBase64, visemes, timestamp: Date.now() });
+
+    return { audioBase64, visemes };
   } catch (error) {
-    console.error('Server-side TTS error:', error);
+    console.error('Azure TTS error:', error);
     return {
       audioBase64: null,
       visemes: [],
-      error: error instanceof Error ? error.message : 'Unknown TTS error'
+      error: error instanceof Error ? error.message : 'Unknown Azure TTS error'
     };
   }
 }
@@ -252,6 +345,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.post("/api/chat", async (req, res) => {
+    const startTime = Date.now();
+    console.log('[chat] request started');
+
     try {
       const { message, prompts, sessionId } = req.body;
       if (!message || typeof message !== 'string') {
@@ -265,14 +361,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         apiKey: process.env.GROQ_API_KEY,
       });
 
-      const systemPrompts = (prompts || []).map((p: any) => ({
-        role: "system",
-        content: p.promptText,
-      }));
+      // Default system prompt for formatting instructions
+      const defaultSystemPrompt = {
+        role: "system" as const,
+        content: `You are a helpful AI assistant for a portfolio website. Format your responses using markdown:
 
-      // Model selection with fallback
+**Bold text**: Use **double asterisks** for important terms, skills, or emphasis
+*Italic text*: Use *single asterisks* for subtle emphasis
+
+Structure your responses with:
+- Clear paragraphs (separate with blank lines)
+- Proper line breaks for readability
+- **Bold** important information like technologies, skills, or key achievements
+- Use bullet points or numbered lists when appropriate
+
+Keep responses professional, informative, and engaging. Focus on the user's questions about projects, skills, and experience.`,
+      };
+
+      const systemPrompts = [
+        defaultSystemPrompt,
+        ...(prompts || []).map((p: any) => ({
+          role: "system",
+          content: p.promptText,
+        })),
+      ];
+
+      // Model selection with fallback - prioritize fastest models first
       const primaryModel = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
-      const fallbackModels = ["llama-3.1-8b-instant", "llama-3.2-3b-preview", "llama-3.1-70b-versatile"].filter(m => m !== primaryModel);
+      const fallbackModels = ["llama-3.1-8b-instant", "llama-3.1-70b-versatile", "mixtral-8x7b-32768"].filter(m => m !== primaryModel);
       const tried: string[] = [];
       let usedModel = primaryModel;
 
@@ -283,13 +399,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const attempt = async (model: string): Promise<string> => {
         tried.push(model);
         try {
-          const chatCompletion = await groq.chat.completions.create({
+          // Add timeout to prevent hanging
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('API_TIMEOUT')), 30000) // 30 second timeout
+          );
+
+          const apiPromise = groq.chat.completions.create({
             messages: [
               ...systemPrompts,
               { role: "user", content: message },
             ],
             model,
           });
+
+          const chatCompletion = await Promise.race([apiPromise, timeoutPromise]);
           return chatCompletion.choices[0]?.message?.content || "I'm sorry, I couldn't generate a response.";
         } catch (err: any) {
           const code = err?.error?.error?.code || err?.error?.code;
@@ -297,19 +420,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.warn('[chat] model not found:', model);
             throw new Error('MODEL_NOT_FOUND');
           }
+          if (err.message === 'API_TIMEOUT') {
+            console.warn('[chat] API timeout for model:', model);
+            throw new Error('API_TIMEOUT');
+          }
           console.error('[chat] model error', model, err?.message || err);
           throw err;
         }
       };
 
       if (cachedResponse) {
-        console.log('[chat] using cache for model', primaryModel);
+        console.log('[chat] using cache for model', primaryModel, 'took', Date.now() - startTime, 'ms');
         response = cachedResponse;
       } else {
         let success = false;
         for (const model of [primaryModel, ...fallbackModels]) {
           try {
+            const apiStart = Date.now();
             response = await attempt(model);
+            console.log('[chat] API call for', model, 'took', Date.now() - apiStart, 'ms');
             usedModel = model;
             success = true;
             break;
@@ -418,34 +547,59 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const animation = getAnimationFromResponse(response);
       const morphTargets = getMorphTargetsFromResponse(response);
 
-      // Generate server-side TTS
-      console.log('Generating server-side TTS...');
-  const ttsResult = await generateServerSideTTS(response);
-  const audioContent = ttsResult.error ? null : ttsResult.audioBase64;
-  const ttsError = ttsResult.error || null;
+      // Generate TTS using Azure TTS with male voice (reliable and fast)
+      console.log('Generating TTS with Azure TTS (male voice)...');
+      const ttsStart = Date.now();
+      let ttsResult: { audioBase64: string | null; visemes: { id: number; offset: number }[]; error?: string };
+      try {
+        ttsResult = await generateAzureTTS(response);
 
-      // Include visemes in metadata
-      const metadata = {
-        animation,
-        morphTargets,
-        visemes: ttsResult.visemes,
-        ttsError
-      };
-      const metadataString = JSON.stringify(metadata);
-      console.log('Metadata string:', metadataString, 'Length:', metadataString.length);
-      if (metadataString.length > 500) {
-        return res.status(400).json({ message: "Metadata too long" });
+        console.log('[chat] TTS generation took', Date.now() - ttsStart, 'ms');
+      } catch (ttsError) {
+        console.warn('TTS generation failed, continuing without audio:', ttsError);
+        ttsResult = { audioBase64: null, visemes: [], error: 'TTS generation failed' };
       }
 
-      const chatMessage = await storage.createChatMessage({
-        sessionId,
-        message,
-        response,
-        metadata: metadataString,
-      });
+      const audioContent = ttsResult.audioBase64;
+      const ttsError = ttsResult.error || null;
 
-  console.log('Sending response: audio present:', !!audioContent, 'ttsError:', ttsError, 'visemes count:', ttsResult.visemes.length);
-      res.json({ chatMessage, audioContent, ttsError });
+      // Simplified metadata (ElevenLabs doesn't provide visemes, so we use empty array)
+      const finalMetadata = {
+        animation,
+        morphTargets,
+        visemes: ttsResult.visemes
+      };
+      const finalMetadataString = JSON.stringify(finalMetadata);
+      console.log('Metadata string length:', finalMetadataString.length);
+
+      // Try to save to database, but don't fail if it doesn't work
+      try {
+        const chatMessage = await storage.createChatMessage({
+          sessionId,
+          message,
+          response,
+          metadata: finalMetadataString,
+        });
+        console.log('Chat message saved successfully');
+      } catch (dbError) {
+        console.warn('Database save failed, continuing without persistence:', dbError);
+        // Continue without failing the request
+      }
+
+      console.log('Sending response: text-only, total time:', Date.now() - startTime, 'ms');
+      res.json({
+        chatMessage: {
+          $id: `temp-${Date.now()}`,
+          sessionId,
+          message,
+          response,
+          metadata: finalMetadataString,
+          $createdAt: new Date().toISOString(),
+          $updatedAt: new Date().toISOString()
+        },
+        audioContent,
+        ttsError
+      });
     } catch (error) {
       console.error("Error processing chat message:", error);
       if (error instanceof z.ZodError) {

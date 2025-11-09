@@ -26,6 +26,7 @@ export default function Chat() {
 
   // Determine current animation: use "talking" when speaking, otherwise use server-provided animation
   const effectiveAnimation = visemes && visemes.length > 0 && visemeStartTime ? 'talking' : currentAnimation;
+  console.log('Chat page - visemes:', visemes, 'visemeStartTime:', visemeStartTime, 'effectiveAnimation:', effectiveAnimation);
 
   const { data: prompts, isLoading: isLoadingPrompts } = usePrompts();
 

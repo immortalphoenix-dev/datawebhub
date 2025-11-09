@@ -10,6 +10,23 @@ interface ChatInterfaceProps {
   error: string | null;
 }
 
+// Function to format text with markdown-like syntax
+function formatMessageText(text: string) {
+  return text
+    // Convert **bold** to <strong>bold</strong> with proper styling
+    .replace(/\*\*(.*?)\*\*/g, '<strong class="font-semibold text-muted-foreground">$1</strong>')
+    // Convert *italic* to <em>italic</em> with proper styling
+    .replace(/\*(.*?)\*/g, '<em class="italic text-muted-foreground">$1</em>')
+    // Convert line breaks to <br> tags
+    .replace(/\n/g, '<br>')
+    // Convert double line breaks to paragraphs
+    .replace(/(<br>\s*<br>|<br><br>)/g, '</p><p class="mb-2">')
+    // Wrap in paragraph if not already wrapped
+    .replace(/^(.+)$/, '<p class="mb-2">$1</p>')
+    // Clean up empty paragraphs
+    .replace(/<p><\/p>/g, '');
+}
+
 export default function ChatInterface({ messages, isLoading, isAiProcessing, isTtsProcessing, error }: ChatInterfaceProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const lastUserMessageRef = useRef<HTMLDivElement>(null);
@@ -46,9 +63,10 @@ export default function ChatInterface({ messages, isLoading, isAiProcessing, isT
           <Bot className="w-4 h-4 sm:w-5 sm:h-5 text-secondary-foreground" />
         </div>
         <div className="bg-muted rounded-2xl rounded-tl-none px-3 py-2 sm:px-4 sm:py-2.5 max-w-[80%] sm:max-w-md">
-          <p className="text-[12px] sm:text-base leading-relaxed text-muted-foreground">
-            Hi! I'm an AI assistant. Feel free to ask me about projects, skills, or experience!
-          </p>
+          <div
+            className="text-[12px] sm:text-base leading-relaxed text-muted-foreground prose prose-sm max-w-none"
+            dangerouslySetInnerHTML={{ __html: formatMessageText("Hi! I'm an AI assistant. Feel free to ask me about projects, skills, or experience!") }}
+          />
         </div>
       </div>
 
@@ -76,12 +94,11 @@ export default function ChatInterface({ messages, isLoading, isAiProcessing, isT
               <Bot className="w-4 h-4 sm:w-5 sm:h-5 text-secondary-foreground" />
             </div>
             <div className="bg-muted rounded-2xl rounded-tl-none px-3 py-2 sm:px-4 sm:py-2.5 max-w-[80%] sm:max-w-md">
-              <p 
-                className="text-[12px] sm:text-base leading-relaxed text-muted-foreground"
+              <div
+                className="text-[12px] sm:text-base leading-relaxed text-muted-foreground prose prose-sm max-w-none prose-headings:text-muted-foreground prose-p:text-muted-foreground prose-strong:text-muted-foreground prose-em:text-muted-foreground"
                 data-testid={`ai-response-${index}`}
-              >
-                {msg.response}
-              </p>
+                dangerouslySetInnerHTML={{ __html: formatMessageText(msg.response) }}
+              />
             </div>
           </div>
         </div>
