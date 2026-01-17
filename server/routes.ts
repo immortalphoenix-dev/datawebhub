@@ -437,28 +437,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
         apiKey: process.env.GROQ_API_KEY,
       });
 
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[chat] Groq initialized, calling API...');
+      }
+
       // Build persona-driven system prompt with quick-starter guidance
       const defaultSystemPrompt = buildEnhancedSystemPrompt();
 
-      // Fetch your actual projects for context
-      const projects = await storage.getProjects();
+      // Fetch your actual projects for context (with graceful fallback)
+      let projects: any[] = [];
+      try {
+        projects = await storage.getProjects();
+      } catch (err) {
+        console.warn('[chat] Could not fetch projects from Appwrite, using empty list');
+      }
+      
       const portfolioContext = buildPortfolioContext(projects);
       const skillsContext = buildSkillsContext(projects);
       const contactContext = buildContactContext();
       const backgroundContext = buildBackgroundContext();
       
-      // Fetch active seeded prompts from Appwrite
-      const allPrompts = await storage.getPrompts();
-      const activePrompts = allPrompts.filter(p => p.isActive);
-      const seedPromptText = activePrompts
-        .map(p => p.promptText)
-        .join("\n\n");
+      // Fetch active seeded prompts from Appwrite (with graceful fallback)
+      let seedPromptText = '';
+      try {
+        const allPrompts = await storage.getPrompts();
+        const activePrompts = allPrompts.filter(p => p.isActive);
+        seedPromptText = activePrompts
+          .map(p => p.promptText)
+          .join("\n\n");
+      } catch (err) {
+        console.warn('[chat] Could not fetch seeded prompts from Appwrite, using default prompts only');
+      }
       
       // Combine all context: persona + portfolio + seeded prompts
-      const enrichedPersonaPrompt = defaultSystemPrompt + backgroundContext + portfolioContext + skillsContext + contactContext + "\n\n" + seedPromptText;
+      const enrichedPersonaPrompt = defaultSystemPrompt + backgroundContext + portfolioContext + skillsContext + contactContext + (seedPromptText ? "\n\n" + seedPromptText : "");
 
-      // Fetch conversation history for context
-      const allMessages = await storage.getChatMessages(sessionId);
+      // Fetch conversation history for context (with graceful fallback)
+      let allMessages: any[] = [];
+      try {
+        allMessages = await storage.getChatMessages(sessionId);
+      } catch (err) {
+        console.warn('[chat] Could not fetch conversation history from Appwrite');
+      }
       
       // Build conversation context (last N exchanges with summarization for older messages)
       // Reduced token limit to account for portfolio context
@@ -509,6 +529,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
               ],
               model,
             });
+
+            if (process.env.NODE_ENV !== 'production' && retryCount === 0) {
+              console.log('[chat] Groq API call started for model:', model);
+            }
 
             const chatCompletion = await Promise.race([apiPromise, timeoutPromise]);
             const responseText = chatCompletion.choices[0]?.message?.content || "I'm sorry, I couldn't generate a response.";
@@ -687,9 +711,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Stream tokens as they arrive (will collect full response too)
       const streamTokens = async () => {
         let fullResponse = '';
+        let tokenCount = 0;
         try {
           for (const model of [primaryModel, ...fallbackModels]) {
             fullResponse = '';
+            tokenCount = 0;
             try {
               const apiStart = Date.now();
               const stream = await attemptStream(model);
@@ -700,13 +726,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 
                 if (token) {
                   fullResponse += token;
+                  tokenCount++;
                   // Send each token to client for real-time display
                   res.write(JSON.stringify({ type: 'token', content: token }) + '\n');
                 }
               }
               
               if (process.env.NODE_ENV !== 'production') {
-                console.log('[chat] Stream API call for', model, 'took', Date.now() - apiStart, 'ms');
+                console.log('[chat] Stream API call for', model, 'took', Date.now() - apiStart, 'ms, tokens:', tokenCount);
               }
               usedModel = model;
               break; // Success, exit model loop
@@ -799,6 +826,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const animation = getAnimationFromResponse(fullResponse);
           const morphTargets = getMorphTargetsFromResponse(fullResponse);
 
+          // Simple viseme fallback so avatar keeps talking even if TTS fails
+          const generateFallbackVisemes = (text: string) => {
+            const words = text.split(/\s+/).filter(Boolean);
+            const visemes = words.map((_, idx) => ({ id: 0, offset: idx * 120 })).slice(0, 80);
+            return visemes.length ? visemes : [{ id: 0, offset: 0 }];
+          };
+
           // Generate TTS using Azure TTS with male voice
           if (process.env.NODE_ENV !== 'production') {
             console.log('Generating TTS with Azure TTS (male voice)...');
@@ -819,6 +853,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           const audioContent = ttsResult.audioBase64;
           const ttsError = hasTTSError ? '⚠️ Audio temporarily unavailable. Click to retry or refresh.' : (ttsResult.error || null);
+
+          // If TTS failed, keep avatar talking with fallback visemes and talking animation
+          if (!audioContent || !ttsResult.visemes?.length) {
+            ttsResult.visemes = generateFallbackVisemes(fullResponse);
+            if (!hasTTSError && !ttsError) {
+              hasTTSError = true;
+            }
+          }
+          const safeVisemes = ttsResult.visemes || generateFallbackVisemes(fullResponse);
+          const effectiveAnimation = animation || 'talking';
           
           // Extract quick starters from response (before stripping)
           const quickStarters = extractQuickStarters(fullResponse);
@@ -830,9 +874,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const isDealClose = dealKeywords.some(keyword => lowerMessage.includes(keyword));
           
           const finalMetadata = { 
-            animation, 
+            animation: effectiveAnimation, 
             morphTargets, 
-            visemes: ttsResult.visemes,
+            visemes: safeVisemes,
             quickStarters: quickStarters,
             isDealClose: isDealClose,
             audioAvailable: !!audioContent,
@@ -855,9 +899,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
               }
             }
             
-            // Send email notification if deal detected
+            // Send email notification if deal detected (with error handling)
             if (isDealClose) {
-              await sendDealNotification(message, sessionId);
+              try {
+                await sendDealNotification(message, sessionId);
+              } catch (emailError) {
+                console.warn('Email notification failed, but chat response sent:', emailError);
+              }
             }
           } catch (dbError) {
             console.warn('Database save failed, continuing without persistence:', dbError);

@@ -108,13 +108,14 @@ export function useChat() {
       // Reset streaming message
       setStreamingMessage(null);
       
-      // Start UI timeout (8 second) for faster user feedback - separate from API timeout (30s)
-      const uiTimeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => {
+      // Start UI timeout (20 second) for faster user feedback - separate from API timeout (30s)
+      let uiTimeout: NodeJS.Timeout | null = null;
+      const uiTimeoutPromise = new Promise<never>((_, reject) => {
+        uiTimeout = setTimeout(() => {
           setIsUiTimedOut(true);
           reject(new Error('Request is taking longer than expected. Please try again.'));
-        }, 8000)
-      );
+        }, 20000);
+      });
 
       // Make streaming API call
       const streamPromise = (async () => {
@@ -208,7 +209,12 @@ export function useChat() {
       })();
 
       // Race between stream and UI timeout
-      return Promise.race([streamPromise, uiTimeoutPromise]);
+      return Promise.race([streamPromise, uiTimeoutPromise]).finally(() => {
+        if (uiTimeout) {
+          clearTimeout(uiTimeout);
+          uiTimeout = null;
+        }
+      });
     },
     onMutate: () => {
       setIsAiProcessing(true);
