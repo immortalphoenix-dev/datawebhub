@@ -26,8 +26,9 @@ app.use(helmet({
   contentSecurityPolicy: false,
 }));
 app.use(compression());
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+// Limit request body size to prevent abuse
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: false, limit: '10kb' }));
 
 // Session middleware (keep for potential future use)
 app.use(session({

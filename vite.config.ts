@@ -29,15 +29,20 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     target: 'es2019',
-    chunkSizeWarningLimit: 700,
+    chunkSizeWarningLimit: 1000, // Increased to accommodate three.js chunk
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: process.env.NODE_ENV === 'production',
+      },
+    },
     rollupOptions: {
-      output: {
-        manualChunks: {
-          react: ['react', 'react-dom'],
-          three: ['three', '@react-three/fiber', '@react-three/drei']
-        }
-      }
-    }
+      treeshake: {
+        moduleSideEffects: false,
+        propertyReadSideEffects: false,
+        tryCatchDeoptimization: false,
+      },
+    },
   },
   server: {
     fs: {

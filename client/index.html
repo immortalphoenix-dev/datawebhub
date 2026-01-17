@@ -10,6 +10,12 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Preconnect to external AI APIs for faster chat responses -->
+    <link rel="preconnect" href="https://api.groq.com" crossorigin>
+    <link rel="dns-prefetch" href="https://api.groq.com">
+    <!-- Preload critical chat assets (loaded on-demand to keep initial bundle small) -->
+    <link rel="prefetch" href="/assets/chat-*.js" as="script">
+    <link rel="prefetch" href="/assets/avatar-3d-*.js" as="script">
   </head>
   <body>
     <div id="root"></div>

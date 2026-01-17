@@ -15,18 +15,81 @@ export default function Chat() {
   
   const { 
     messages, 
+    streamingMessage,
     sendMessage, 
+    retryMessage,
     isLoading, 
     isAiProcessing,
     isTtsProcessing,
+    isLoadingMessages,
+    isUiTimedOut,
     error,
     visemes,
-    visemeStartTime
+    visemeStartTime,
+    quickStarters,
+    setQuickStarters,
   } = useChat();
 
-  // Determine current animation: use "talking" when speaking, otherwise use server-provided animation
-  const effectiveAnimation = visemes && visemes.length > 0 && visemeStartTime ? 'talking' : currentAnimation;
-  console.log('Chat page - visemes:', visemes, 'visemeStartTime:', visemeStartTime, 'effectiveAnimation:', effectiveAnimation);
+  // Helper: Calculate mouth open intensity based on current viseme
+  const getMouthIntensityFromViseme = (visemes: { id: number; offset: number }[], startTime: number | null): number => {
+    if (!visemes || visemes.length === 0 || !startTime) return 0;
+    
+    const now = performance.now();
+    const elapsed = now - startTime;
+    
+    // Find the current viseme based on elapsed time
+    let currentViseme = visemes[0];
+    for (const viseme of visemes) {
+      if (viseme.offset <= elapsed) {
+        currentViseme = viseme;
+      } else {
+        break;
+      }
+    }
+    
+    // Map viseme ID to mouth open intensity (0-1)
+    // Viseme 0 = silence, 1-10 = vowels/open sounds, 12-21 = consonants/closed
+    const mouthIntensity: { [key: number]: number } = {
+      0: 0.0,    // silence
+      1: 0.8,    // ah
+      2: 0.7,    // eye
+      3: 0.6,    // ow
+      4: 0.8,    // aw
+      5: 0.6,    // eh
+      6: 0.5,    // er
+      7: 0.7,    // ee
+      8: 0.8,    // oh
+      9: 0.8,    // oo
+      10: 0.9,   // aa
+      11: 0.6,   // ay
+      12: 0.3,   // p/b/m
+      13: 0.2,   // d/t/n
+      14: 0.4,   // f/v
+      15: 0.2,   // k/g
+      16: 0.1,   // h
+      17: 0.3,   // ch/sh
+      18: 0.4,   // l
+      19: 0.3,   // r
+      20: 0.2,   // s/z
+      21: 0.3,   // th
+    };
+    
+    return mouthIntensity[currentViseme.id] ?? 0;
+  };
+
+  // Determine current animation: thinking → speaking → talking (visemes) → message metadata
+  let effectiveAnimation = currentAnimation;
+  
+  if (isAiProcessing) {
+    // While AI is processing (before response starts streaming), show "thinking"
+    effectiveAnimation = 'thinking';
+  } else if (isTtsProcessing && visemes && visemes.length > 0 && visemeStartTime) {
+    // If TTS is playing with visemes, use "talking" for synchronization
+    effectiveAnimation = 'talking';
+  } else if (visemes && visemes.length > 0 && visemeStartTime) {
+    // If visemes are active (audio playing), use "talking"
+    effectiveAnimation = 'talking';
+  }
 
   const { data: prompts, isLoading: isLoadingPrompts } = usePrompts();
 
@@ -39,9 +102,6 @@ export default function Chat() {
     const lastMessage = messages[messages.length - 1];
     if (lastMessage && lastMessage.response) {
       try {
-        // Debug: Log metadata before using
-        console.log('Raw metadata:', lastMessage.metadata);
-
         const metadata = lastMessage.metadata;
         if (metadata) {
           if (metadata.animation) {
@@ -67,6 +127,38 @@ export default function Chat() {
       }
     }
   }, [messages]);
+
+  // Update morphTargets with mouth intensity driven by visemes
+  useEffect(() => {
+    if (visemes && visemes.length > 0 && visemeStartTime) {
+      // Calculate mouth intensity based on current viseme
+      const mouthIntensity = getMouthIntensityFromViseme(visemes, visemeStartTime);
+      
+      // Update morphTargets with mouth open intensity
+      setCurrentMorphTargets(prev => ({
+        ...prev,
+        mouthOpen: Math.max(mouthIntensity * 0.9, 0.1), // Scale down slightly, min 0.1 for visibility
+      }));
+    }
+  }, [visemes, visemeStartTime]);
+
+  // Continuously update mouth intensity as audio plays (drive animation during speech)
+  useEffect(() => {
+    if (!visemes || visemes.length === 0 || !visemeStartTime || !isTtsProcessing) {
+      return;
+    }
+
+    // Update mouth intensity every 50ms for smooth animation
+    const animationInterval = setInterval(() => {
+      const mouthIntensity = getMouthIntensityFromViseme(visemes, visemeStartTime);
+      setCurrentMorphTargets(prev => ({
+        ...prev,
+        mouthOpen: Math.max(mouthIntensity * 0.9, 0.1),
+      }));
+    }, 50);
+
+    return () => clearInterval(animationInterval);
+  }, [visemes, visemeStartTime, isTtsProcessing]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -115,10 +207,19 @@ export default function Chat() {
             <div className="md:w-3/5 flex flex-col flex-1 bg-background overflow-hidden">
               <ChatInterface
                 messages={messages}
+                streamingMessage={streamingMessage}
                 isLoading={isLoading}
+                isLoadingMessages={isLoadingMessages}
                 isAiProcessing={isAiProcessing}
                 isTtsProcessing={isTtsProcessing}
+                isUiTimedOut={isUiTimedOut}
                 error={error || null}
+                onRetry={() => retryMessage(prompts || [])}
+                quickStarters={quickStarters}
+                onQuickStart={(text) => {
+                  setMessage(text);
+                  setQuickStarters([]); // Clear quick starters after selection
+                }}
               />
               
               {/* Chat Input */}

@@ -7,15 +7,22 @@ import type { Request, Response, NextFunction } from "express";
 import multer from "multer";
 import Groq from "groq-sdk";
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
+import rateLimit from "express-rate-limit";
+import { createCacheService } from "./cache";
+import { buildConversationContext, injectConversationContext, getMemoryStats } from "./conversation-memory";
+import { buildEnhancedSystemPrompt, extractQuickStarters, stripQuickStarters } from "./persona";
+import { buildPortfolioContext, buildSkillsContext, buildContactContext, buildBackgroundContext } from "./portfolio-context";
+import { sendDealNotification } from "./email-service";
 const upload = multer({ storage: multer.memoryStorage() });
 
-// In-memory cache for Azure TTS audio to keep things fast and avoid duplicate syntheses
+// In-memory cache for Azure TTS audio (kept in-memory for speed on binary data)
+// For larger deployments, consider using Redis
 const azureTTSCache = new Map<string, { base64: string; visemes: { id: number; offset: number }[]; timestamp: number }>();
 const AZURE_TTS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 const AZURE_TTS_CACHE_MAX = 50; // max entries
 
 function getAzureTTSCacheKey(text: string, voice: string) {
-  return `${voice}|${text.trim().toLowerCase()}`;
+  return `tts:${voice}|${text.trim().toLowerCase()}`;
 }
 
 // Fallback viseme generation based on basic text analysis
@@ -94,7 +101,9 @@ async function generateAzureTTS(text: string): Promise<{ audioBase64: string | n
     const visemes: { id: number; offset: number }[] = [];
 
     synthesizer.visemeReceived = (s, e) => {
-      console.log('Viseme received:', e.visemeId, 'at offset:', e.audioOffset);
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('Viseme received:', e.visemeId, 'at offset:', e.audioOffset);
+      }
       visemes.push({
         id: e.visemeId,
         offset: e.audioOffset / 10000 // Convert from ticks (100ns) to milliseconds
@@ -106,11 +115,15 @@ async function generateAzureTTS(text: string): Promise<{ audioBase64: string | n
         text,
         (result) => {
           synthesizer.close();
+          if (process.env.NODE_ENV !== 'production') {
           console.log(`Generated ${visemes.length} visemes for text: "${text}"`);
+        }
 
           // Fallback: if no visemes were captured, generate basic ones based on text
           if (visemes.length === 0) {
-            console.log('No visemes captured from Azure, generating fallback visemes');
+            if (process.env.NODE_ENV !== 'production') {
+              console.log('No visemes captured from Azure, generating fallback visemes');
+            }
             visemes.push(...generateFallbackVisemes(text));
           }
 
@@ -156,45 +169,79 @@ async function generateAzureTTS(text: string): Promise<{ audioBase64: string | n
   }
 }
 
+// Initialize cache service (Redis if available, otherwise in-memory)
+const cacheService = createCacheService();
+
 // Simple in-memory cache for chat responses (LRU-style with max 100 entries)
-const responseCache = new Map<string, { response: string; timestamp: number }>();
-const MAX_CACHE_SIZE = 100;
+// Now backed by either Redis or in-memory depending on REDIS_URL env var
 const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
 function getCacheKey(message: string, prompts: any[], model: string = ""): string {
   const promptHash = prompts.map(p => p.promptText).sort().join('|');
   const modelPart = model ? `|model:${model}` : '';
-  return `${message.trim().toLowerCase()}|${promptHash}${modelPart}`;
+  return `chat:response:${message.trim().toLowerCase()}|${promptHash}${modelPart}`;
 }
 
-function getCachedResponse(key: string): string | null {
-  const cached = responseCache.get(key);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.response;
+async function getCachedResponse(key: string): Promise<string | null> {
+  try {
+    return await cacheService.get(key);
+  } catch (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('Error getting cached response:', error);
+    }
+    return null;
   }
-  if (cached) {
-    responseCache.delete(key); // Remove expired entry
-  }
-  return null;
 }
 
-function setCachedResponse(key: string, response: string): void {
-  if (responseCache.size >= MAX_CACHE_SIZE) {
-    // Remove oldest entry (simple FIFO)
-    const firstKey = responseCache.keys().next().value;
-    if (firstKey) {
-      responseCache.delete(firstKey);
+async function setCachedResponse(key: string, response: string): Promise<void> {
+  try {
+    await cacheService.set(key, response, CACHE_TTL);
+  } catch (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('Error setting cached response:', error);
     }
   }
-  responseCache.set(key, { response, timestamp: Date.now() });
 }
+
+// Rate limiting middleware for chat endpoints
+// IP-based rate limiting for overall chat API usage
+const chatIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Max 100 requests per IP per 15 min window
+  message: 'Too many chat requests from this IP, please try again later',
+  standardHeaders: true, // Return rate limit info in `RateLimit-*` headers
+  legacyHeaders: false,
+  skip: (req) => {
+    // Skip rate limiting for local/internal requests (optional)
+    return process.env.NODE_ENV !== 'production';
+  },
+});
+
+// Strict rate limiting for chat message endpoint (POST /api/chat)
+const chatMessageLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10, // Max 10 messages per minute per IP
+  message: 'Too many chat messages sent, please wait before sending another',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    // Use sessionId if available, fallback to IP
+    const sessionId = req.body?.sessionId || req.ip;
+    return `chat_${sessionId}`;
+  },
+  skip: (req) => {
+    return process.env.NODE_ENV !== 'production';
+  },
+});
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Lightweight telemetry endpoint (fire-and-forget)
   app.post('/api/telemetry', (req, res) => {
     try {
       const { event, payload, ts } = req.body ?? {};
-      console.log('[telemetry]', event, ts, payload ? JSON.stringify(payload).slice(0, 500) : '');
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[telemetry]', event, ts, payload ? JSON.stringify(payload).slice(0, 500) : '');
+      }
       res.status(204).end();
     } catch {
       res.status(204).end();
@@ -330,11 +377,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Chat routes
-  app.get("/api/chat/messages", async (req, res) => {
+  app.get("/api/chat/messages", chatIpLimiter, async (req, res) => {
     try {
       const { sessionId } = req.query;
       if (!sessionId || typeof sessionId !== 'string') {
         return res.status(400).json({ message: "sessionId is required" });
+      }
+      // Validate sessionId length to prevent abuse
+      if (sessionId.length > 100) {
+        return res.status(400).json({ message: "Invalid sessionId" });
       }
       const messages = await storage.getChatMessages(sessionId);
       res.json(messages);
@@ -344,44 +395,90 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/chat", async (req, res) => {
+  app.post("/api/chat", chatIpLimiter, chatMessageLimiter, async (req, res) => {
     const startTime = Date.now();
-    console.log('[chat] request started');
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[chat] request started');
+    }
 
     try {
       const { message, prompts, sessionId } = req.body;
+      
+      // Input validation
       if (!message || typeof message !== 'string') {
         return res.status(400).json({ message: "Message is required" });
       }
       if (!sessionId || typeof sessionId !== 'string') {
         return res.status(400).json({ message: "sessionId is required" });
       }
+      
+      // Validate message length (prevent abuse)
+      if (message.length > 5000) {
+        return res.status(400).json({ message: "Message too long (max 5000 characters)" });
+      }
+      if (message.trim().length === 0) {
+        return res.status(400).json({ message: "Message cannot be empty" });
+      }
+      
+      // Validate sessionId length
+      if (sessionId.length > 100) {
+        return res.status(400).json({ message: "Invalid sessionId" });
+      }
+      
+      // Validate prompts array if provided
+      if (prompts && !Array.isArray(prompts)) {
+        return res.status(400).json({ message: "Prompts must be an array" });
+      }
+      if (prompts && prompts.length > 10) {
+        return res.status(400).json({ message: "Too many prompts (max 10)" });
+      }
 
       const groq = new Groq({
         apiKey: process.env.GROQ_API_KEY,
       });
 
-      // Default system prompt for formatting instructions
-      const defaultSystemPrompt = {
-        role: "system" as const,
-        content: `You are a helpful AI assistant for a portfolio website. Format your responses using markdown:
+      // Build persona-driven system prompt with quick-starter guidance
+      const defaultSystemPrompt = buildEnhancedSystemPrompt();
 
-**Bold text**: Use **double asterisks** for important terms, skills, or emphasis
-*Italic text*: Use *single asterisks* for subtle emphasis
+      // Fetch your actual projects for context
+      const projects = await storage.getProjects();
+      const portfolioContext = buildPortfolioContext(projects);
+      const skillsContext = buildSkillsContext(projects);
+      const contactContext = buildContactContext();
+      const backgroundContext = buildBackgroundContext();
+      
+      // Fetch active seeded prompts from Appwrite
+      const allPrompts = await storage.getPrompts();
+      const activePrompts = allPrompts.filter(p => p.isActive);
+      const seedPromptText = activePrompts
+        .map(p => p.promptText)
+        .join("\n\n");
+      
+      // Combine all context: persona + portfolio + seeded prompts
+      const enrichedPersonaPrompt = defaultSystemPrompt + backgroundContext + portfolioContext + skillsContext + contactContext + "\n\n" + seedPromptText;
 
-Structure your responses with:
-- Clear paragraphs (separate with blank lines)
-- Proper line breaks for readability
-- **Bold** important information like technologies, skills, or key achievements
-- Use bullet points or numbered lists when appropriate
+      // Fetch conversation history for context
+      const allMessages = await storage.getChatMessages(sessionId);
+      
+      // Build conversation context (last N exchanges with summarization for older messages)
+      // Reduced token limit to account for portfolio context
+      const conversationContext = buildConversationContext(allMessages, 6, 1200);
+      
+      // Inject conversation context into system prompt
+      const enrichedSystemPrompt = injectConversationContext(enrichedPersonaPrompt, conversationContext);
 
-Keep responses professional, informative, and engaging. Focus on the user's questions about projects, skills, and experience.`,
-      };
+      if (process.env.NODE_ENV !== 'production') {
+        const memoryStats = getMemoryStats(allMessages, conversationContext);
+        console.log('[chat] memory stats:', memoryStats);
+      }
 
       const systemPrompts = [
-        defaultSystemPrompt,
+        {
+          role: "system" as const,
+          content: enrichedSystemPrompt,
+        },
         ...(prompts || []).map((p: any) => ({
-          role: "system",
+          role: "system" as const,
           content: p.promptText,
         })),
       ];
@@ -393,44 +490,164 @@ Keep responses professional, informative, and engaging. Focus on the user's ques
       let usedModel = primaryModel;
 
       const cacheKey = getCacheKey(message, prompts || [], primaryModel);
-      const cachedResponse = getCachedResponse(cacheKey);
+      const cachedResponse = await getCachedResponse(cacheKey);
       let response: string = '';
+
+      // Retry logic with exponential backoff
+      const attemptWithRetry = async (model: string, maxRetries: number = 3): Promise<string> => {
+        for (let retryCount = 0; retryCount <= maxRetries; retryCount++) {
+          try {
+            // Add timeout to prevent hanging (30 second limit for overall API call)
+            const timeoutPromise = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('API_TIMEOUT')), 30000)
+            );
+
+            const apiPromise = groq.chat.completions.create({
+              messages: [
+                ...systemPrompts,
+                { role: "user", content: message },
+              ],
+              model,
+            });
+
+            const chatCompletion = await Promise.race([apiPromise, timeoutPromise]);
+            const responseText = chatCompletion.choices[0]?.message?.content || "I'm sorry, I couldn't generate a response.";
+            
+            if (process.env.NODE_ENV !== 'production' && retryCount > 0) {
+              console.log('[chat] API succeeded on retry', retryCount, 'for model:', model);
+            }
+            
+            return responseText;
+          } catch (err: any) {
+            const code = err?.error?.error?.code || err?.error?.code;
+            
+            // Don't retry model_not_found errors
+            if (code === 'model_not_found') {
+              if (process.env.NODE_ENV !== 'production') {
+                console.warn('[chat] model not found:', model);
+              }
+              throw new Error('MODEL_NOT_FOUND');
+            }
+
+            // Check if this is a retryable error
+            const isRetryable = err.message === 'API_TIMEOUT' || 
+                               code === 'rate_limit_exceeded' ||
+                               (err.status >= 500 && err.status < 600);
+
+            // If this is the last retry or not retryable, throw the error
+            if (retryCount === maxRetries || !isRetryable) {
+              if (err.message === 'API_TIMEOUT') {
+                if (process.env.NODE_ENV !== 'production') {
+                  console.warn('[chat] API timeout for model:', model, 'after', retryCount, 'retries');
+                }
+                throw new Error('API_TIMEOUT');
+              }
+              console.error('[chat] model error', model, 'after', retryCount, 'retries', err?.message || err);
+              throw err;
+            }
+
+            // Calculate exponential backoff with jitter: (2^retryCount - 1) * 100ms + random jitter
+            const baseDelay = (Math.pow(2, retryCount) - 1) * 100;
+            const jitter = Math.random() * 100;
+            const delay = baseDelay + jitter;
+
+            if (process.env.NODE_ENV !== 'production') {
+              console.warn('[chat] retrying model', model, 'in', Math.round(delay), 'ms (attempt', retryCount + 1, '/', maxRetries + 1, ')', 'error:', err?.message);
+            }
+
+            // Wait before retrying
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        }
+        
+        throw new Error('Failed after all retries');
+      };
+
+      // Streaming version with retry
+      const attemptWithRetryStream = async (model: string, maxRetries: number = 3): Promise<AsyncIterable<any>> => {
+        for (let retryCount = 0; retryCount <= maxRetries; retryCount++) {
+          try {
+            // Add timeout to prevent hanging (30 second limit for overall API call)
+            const timeoutPromise = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('API_TIMEOUT')), 30000)
+            );
+
+            // Create stream request
+            const streamPromise = groq.chat.completions.create({
+              messages: [
+                ...systemPrompts,
+                { role: "user", content: message },
+              ],
+              model,
+              stream: true, // Enable streaming
+            });
+
+            const stream = await Promise.race([streamPromise, timeoutPromise]);
+            
+            if (process.env.NODE_ENV !== 'production' && retryCount > 0) {
+              console.log('[chat] Stream API succeeded on retry', retryCount, 'for model:', model);
+            }
+            
+            return stream as AsyncIterable<any>;
+          } catch (err: any) {
+            const code = err?.error?.error?.code || err?.error?.code;
+            
+            // Don't retry model_not_found errors
+            if (code === 'model_not_found') {
+              if (process.env.NODE_ENV !== 'production') {
+                console.warn('[chat] model not found:', model);
+              }
+              throw new Error('MODEL_NOT_FOUND');
+            }
+
+            // Check if this is a retryable error
+            const isRetryable = err.message === 'API_TIMEOUT' || 
+                               code === 'rate_limit_exceeded' ||
+                               (err.status >= 500 && err.status < 600);
+
+            // If this is the last retry or not retryable, throw the error
+            if (retryCount === maxRetries || !isRetryable) {
+              if (err.message === 'API_TIMEOUT') {
+                if (process.env.NODE_ENV !== 'production') {
+                  console.warn('[chat] Stream API timeout for model:', model, 'after', retryCount, 'retries');
+                }
+                throw new Error('API_TIMEOUT');
+              }
+              console.error('[chat] Stream model error', model, 'after', retryCount, 'retries', err?.message || err);
+              throw err;
+            }
+
+            // Calculate exponential backoff with jitter
+            const baseDelay = (Math.pow(2, retryCount) - 1) * 100;
+            const jitter = Math.random() * 100;
+            const delay = baseDelay + jitter;
+
+            if (process.env.NODE_ENV !== 'production') {
+              console.warn('[chat] retrying stream for model', model, 'in', Math.round(delay), 'ms (attempt', retryCount + 1, '/', maxRetries + 1, ')', 'error:', err?.message);
+            }
+
+            // Wait before retrying
+            await new Promise(resolve => setTimeout(resolve, delay));
+          }
+        }
+        
+        throw new Error('Failed after all retries');
+      };
 
       const attempt = async (model: string): Promise<string> => {
         tried.push(model);
-        try {
-          // Add timeout to prevent hanging
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('API_TIMEOUT')), 30000) // 30 second timeout
-          );
+        return attemptWithRetry(model, 3); // 3 retries = 4 total attempts
+      };
 
-          const apiPromise = groq.chat.completions.create({
-            messages: [
-              ...systemPrompts,
-              { role: "user", content: message },
-            ],
-            model,
-          });
-
-          const chatCompletion = await Promise.race([apiPromise, timeoutPromise]);
-          return chatCompletion.choices[0]?.message?.content || "I'm sorry, I couldn't generate a response.";
-        } catch (err: any) {
-          const code = err?.error?.error?.code || err?.error?.code;
-          if (code === 'model_not_found') {
-            console.warn('[chat] model not found:', model);
-            throw new Error('MODEL_NOT_FOUND');
-          }
-          if (err.message === 'API_TIMEOUT') {
-            console.warn('[chat] API timeout for model:', model);
-            throw new Error('API_TIMEOUT');
-          }
-          console.error('[chat] model error', model, err?.message || err);
-          throw err;
-        }
+      const attemptStream = async (model: string): Promise<AsyncIterable<any>> => {
+        tried.push(model);
+        return attemptWithRetryStream(model, 3); // 3 retries = 4 total attempts
       };
 
       if (cachedResponse) {
-        console.log('[chat] using cache for model', primaryModel, 'took', Date.now() - startTime, 'ms');
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[chat] using cache for model', primaryModel, 'took', Date.now() - startTime, 'ms');
+        }
         response = cachedResponse;
       } else {
         let success = false;
@@ -438,7 +655,9 @@ Keep responses professional, informative, and engaging. Focus on the user's ques
           try {
             const apiStart = Date.now();
             response = await attempt(model);
-            console.log('[chat] API call for', model, 'took', Date.now() - apiStart, 'ms');
+            if (process.env.NODE_ENV !== 'production') {
+              console.log('[chat] API call for', model, 'took', Date.now() - apiStart, 'ms');
+            }
             usedModel = model;
             success = true;
             break;
@@ -451,154 +670,234 @@ Keep responses professional, informative, and engaging. Focus on the user's ques
         if (!success) {
           return res.status(500).json({ message: 'No usable model available (all fallbacks failed).' });
         }
-        setCachedResponse(cacheKey, response);
+        await setCachedResponse(cacheKey, response);
       }
 
-      console.log('[chat] response type:', typeof response, 'model used:', usedModel, 'tried:', tried.join(','));
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[chat] response type:', typeof response, 'model used:', usedModel, 'tried:', tried.join(','));
+      }
 
-      // Function to determine animation based on response content
-      const getAnimationFromResponse = (text: string) => {
-        const lowerText = text.toLowerCase();
-        
-        // Define a map of keywords to animations, ordered by specificity (longer phrases first)
-        const animationMap = new Map<string, string>([
-          ["playing golf", "playing golf"],
-          ["salsa dance", "salsa dance"],
-          ["looking behind", "looking behind"],
-          ["nods head", "nods head"],
-          ["shakes head", "shakes head"],
-          ["cheering", "cheering"],
-          ["punching", "punching"],
-          ["stretching", "stretching"],
-          ["waving", "waving"],
-          ["hello", "waving"],
-          ["hi", "waving"],
-          ["golf", "playing golf"],
-          ["cheer", "cheering"],
-          ["great", "cheering"],
-          ["yes", "nods head"],
-          ["affirmative", "nods head"],
-          ["no", "shakes head"],
-          ["negative", "shakes head"],
-          ["dance", "salsa dance"],
-          ["punch", "punching"],
-          ["stretch", "stretching"],
-        ]);
+      // Set response headers for streaming
+      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+      res.setHeader('Transfer-Encoding', 'chunked');
 
-        // Sort keywords by length in descending order to prioritize more specific phrases
-        const sortedKeywords = Array.from(animationMap.keys()).sort((a, b) => b.length - a.length);
+      // Send message chunk immediately to unblock UI
+      res.write(JSON.stringify({ type: 'message_start', sessionId, message }) + '\n');
 
-        for (const keyword of sortedKeywords) {
-          if (lowerText.includes(keyword)) {
-            return animationMap.get(keyword);
+      // Stream tokens as they arrive (will collect full response too)
+      const streamTokens = async () => {
+        let fullResponse = '';
+        try {
+          for (const model of [primaryModel, ...fallbackModels]) {
+            fullResponse = '';
+            try {
+              const apiStart = Date.now();
+              const stream = await attemptStream(model);
+              
+              for await (const chunk of stream) {
+                const delta = chunk.choices?.[0]?.delta;
+                const token = delta?.content || '';
+                
+                if (token) {
+                  fullResponse += token;
+                  // Send each token to client for real-time display
+                  res.write(JSON.stringify({ type: 'token', content: token }) + '\n');
+                }
+              }
+              
+              if (process.env.NODE_ENV !== 'production') {
+                console.log('[chat] Stream API call for', model, 'took', Date.now() - apiStart, 'ms');
+              }
+              usedModel = model;
+              break; // Success, exit model loop
+            } catch (e: any) {
+              if (e.message === 'MODEL_NOT_FOUND') {
+                continue; // Try next model
+              }
+              throw e;
+            }
           }
-        }
 
-        if (text.length > 0) return "talking"; // Default to talking if there's a response
-        return "idle"; // Default to idle if no response
-      };
+          if (!fullResponse) {
+            fullResponse = "I'm sorry, I couldn't generate a response.";
+          }
 
-      // Function to determine morph targets based on response content
-      const getMorphTargetsFromResponse = (text: string) => {
-        const lowerText = text.toLowerCase();
-        let morphTargets: { [key: string]: number } = {};
+          // Now process the complete response for animations, TTS, and metadata
+          const getAnimationFromResponse = (text: string) => {
+            const lowerText = text.toLowerCase();
+            const animationMap = new Map<string, string>([
+              ["playing golf", "playing golf"],
+              ["salsa dance", "salsa dance"],
+              ["looking behind", "looking behind"],
+              ["nods head", "nods head"],
+              ["shakes head", "shakes head"],
+              ["cheering", "cheering"],
+              ["punching", "punching"],
+              ["stretching", "stretching"],
+              ["waving", "waving"],
+              ["hello", "waving"],
+              ["hi", "waving"],
+              ["golf", "playing golf"],
+              ["cheer", "cheering"],
+              ["great", "cheering"],
+              ["yes", "nods head"],
+              ["affirmative", "nods head"],
+              ["no", "shakes head"],
+              ["negative", "shakes head"],
+              ["dance", "salsa dance"],
+              ["punch", "punching"],
+              ["stretch", "stretching"],
+            ]);
+            const sortedKeywords = Array.from(animationMap.keys()).sort((a, b) => b.length - a.length);
+            for (const keyword of sortedKeywords) {
+              if (lowerText.includes(keyword)) {
+                return animationMap.get(keyword);
+              }
+            }
+            if (text.length > 0) return "talking";
+            return "idle";
+          };
 
-  // Do not set jawOpen or mouthPucker at all
-
-        // Emotion detection - can layer on top of talking morphs
-        const emotionMap = [
-            {
+          const getMorphTargetsFromResponse = (text: string) => {
+            const lowerText = text.toLowerCase();
+            let morphTargets: { [key: string]: number } = {};
+            const emotionMap = [
+              {
                 keywords: ['happy', 'great', 'awesome', 'fantastic', 'joy', 'funny', 'amused', 'haha', 'lol'],
                 morphs: { mouthSmileLeft: 0.6, mouthSmileRight: 0.6, cheekSquintLeft: 0.3, cheekSquintRight: 0.3 }
-            },
-            {
+              },
+              {
                 keywords: ['sad', 'sorry', 'unfortunate', 'unfortunately', 'apologize'],
                 morphs: { mouthFrownLeft: 0.5, mouthFrownRight: 0.5, browInnerUp: 0.3 }
-            },
-            {
+              },
+              {
                 keywords: ['angry', 'frustrated', 'annoyed'],
                 morphs: { browDownLeft: 0.8, browDownRight: 0.8, mouthPressLeft: 0.5, mouthPressRight: 0.5, noseSneerLeft: 0.4 }
-            },
-            {
+              },
+              {
                 keywords: ['wow', 'whoa', 'really', 'surprise', 'incredible'],
                 morphs: { eyeWideLeft: 0.5, eyeWideRight: 0.5, browInnerUp: 0.6 }
-            },
-            {
+              },
+              {
                 keywords: ['curious', 'wonder', 'question', 'what', 'how', 'why', '?'],
                 morphs: { browInnerUp: 0.5, eyeWideLeft: 0.15, eyeWideRight: 0.15 }
-            },
-            {
+              },
+              {
                 keywords: ['think', 'hmm', 'let me see', 'consider'],
                 morphs: { eyeLookUpLeft: 0.6, eyeLookUpRight: 0.6, browDownLeft: 0.2, browDownRight: 0.2 }
-            }
-        ];
-
-        // Find the first matching emotion and apply its morphs
-        for (const emotion of emotionMap) {
-            if (emotion.keywords.some(keyword => lowerText.includes(keyword))) {
+              }
+            ];
+            for (const emotion of emotionMap) {
+              if (emotion.keywords.some(keyword => lowerText.includes(keyword))) {
                 Object.assign(morphTargets, emotion.morphs);
-                break; // Stop after the first match to avoid conflicting expressions
+                break;
+              }
             }
+            return morphTargets;
+          };
+
+          const animation = getAnimationFromResponse(fullResponse);
+          const morphTargets = getMorphTargetsFromResponse(fullResponse);
+
+          // Generate TTS using Azure TTS with male voice
+          if (process.env.NODE_ENV !== 'production') {
+            console.log('Generating TTS with Azure TTS (male voice)...');
+          }
+          const ttsStart = Date.now();
+          let ttsResult: { audioBase64: string | null; visemes: { id: number; offset: number }[]; error?: string };
+          let hasTTSError = false;
+          try {
+            ttsResult = await generateAzureTTS(fullResponse);
+            if (process.env.NODE_ENV !== 'production') {
+              console.log('[chat] TTS generation took', Date.now() - ttsStart, 'ms');
+            }
+          } catch (ttsError) {
+            console.warn('TTS generation failed, continuing with text-only response:', ttsError);
+            hasTTSError = true;
+            ttsResult = { audioBase64: null, visemes: [], error: 'Audio unavailable - text displayed instead' };
+          }
+
+          const audioContent = ttsResult.audioBase64;
+          const ttsError = hasTTSError ? '⚠️ Audio temporarily unavailable. Click to retry or refresh.' : (ttsResult.error || null);
+          
+          // Extract quick starters from response (before stripping)
+          const quickStarters = extractQuickStarters(fullResponse);
+          const cleanResponse = stripQuickStarters(fullResponse);
+          
+          // Detect if this looks like a potential deal/lead
+          const dealKeywords = ['hire', 'project', 'work together', 'start', 'begin', 'interested', 'interested in working', 'can you', 'can we', 'let\'s', 'when can you', 'how soon', 'i need', 'build me', 'create', 'develop'];
+          const lowerMessage = message.toLowerCase();
+          const isDealClose = dealKeywords.some(keyword => lowerMessage.includes(keyword));
+          
+          const finalMetadata = { 
+            animation, 
+            morphTargets, 
+            visemes: ttsResult.visemes,
+            quickStarters: quickStarters,
+            isDealClose: isDealClose,
+            audioAvailable: !!audioContent,
+            canRetry: hasTTSError, // Flag for client to allow audio retry
+          };
+          const finalMetadataString = JSON.stringify(finalMetadata);
+
+          // Try to save to database
+          try {
+            const chatMessage = await storage.createChatMessage({
+              sessionId,
+              message,
+              response: cleanResponse,
+              metadata: finalMetadataString,
+            });
+            if (process.env.NODE_ENV !== 'production') {
+              console.log('Chat message saved successfully');
+              if (isDealClose) {
+                console.log('🔔 POTENTIAL DEAL DETECTED - Sending email notification...');
+              }
+            }
+            
+            // Send email notification if deal detected
+            if (isDealClose) {
+              await sendDealNotification(message, sessionId);
+            }
+          } catch (dbError) {
+            console.warn('Database save failed, continuing without persistence:', dbError);
+          }
+
+          if (process.env.NODE_ENV !== 'production') {
+            console.log('Sending stream complete: total time:', Date.now() - startTime, 'ms');
+          }
+
+          // Send completion with metadata and audio
+          res.write(JSON.stringify({
+            type: 'message_complete',
+            chatMessage: {
+              $id: `temp-${Date.now()}`,
+              sessionId,
+              message,
+              response: cleanResponse,
+              metadata: finalMetadataString,
+              $createdAt: new Date().toISOString(),
+              $updatedAt: new Date().toISOString()
+            },
+            audioContent,
+            ttsError,
+            quickStarters: quickStarters,
+          }) + '\n');
+          
+          res.end();
+        } catch (err: any) {
+          console.error('[chat] Stream error:', err?.message || err);
+          res.write(JSON.stringify({ type: 'error', error: err?.message || 'Unknown error' }) + '\n');
+          res.end();
         }
-
-        return morphTargets;
       };
 
-      const animation = getAnimationFromResponse(response);
-      const morphTargets = getMorphTargetsFromResponse(response);
-
-      // Generate TTS using Azure TTS with male voice (reliable and fast)
-      console.log('Generating TTS with Azure TTS (male voice)...');
-      const ttsStart = Date.now();
-      let ttsResult: { audioBase64: string | null; visemes: { id: number; offset: number }[]; error?: string };
-      try {
-        ttsResult = await generateAzureTTS(response);
-
-        console.log('[chat] TTS generation took', Date.now() - ttsStart, 'ms');
-      } catch (ttsError) {
-        console.warn('TTS generation failed, continuing without audio:', ttsError);
-        ttsResult = { audioBase64: null, visemes: [], error: 'TTS generation failed' };
-      }
-
-      const audioContent = ttsResult.audioBase64;
-      const ttsError = ttsResult.error || null;
-
-      // Simplified metadata (ElevenLabs doesn't provide visemes, so we use empty array)
-      const finalMetadata = {
-        animation,
-        morphTargets,
-        visemes: ttsResult.visemes
-      };
-      const finalMetadataString = JSON.stringify(finalMetadata);
-      console.log('Metadata string length:', finalMetadataString.length);
-
-      // Try to save to database, but don't fail if it doesn't work
-      try {
-        const chatMessage = await storage.createChatMessage({
-          sessionId,
-          message,
-          response,
-          metadata: finalMetadataString,
-        });
-        console.log('Chat message saved successfully');
-      } catch (dbError) {
-        console.warn('Database save failed, continuing without persistence:', dbError);
-        // Continue without failing the request
-      }
-
-      console.log('Sending response: text-only, total time:', Date.now() - startTime, 'ms');
-      res.json({
-        chatMessage: {
-          $id: `temp-${Date.now()}`,
-          sessionId,
-          message,
-          response,
-          metadata: finalMetadataString,
-          $createdAt: new Date().toISOString(),
-          $updatedAt: new Date().toISOString()
-        },
-        audioContent,
-        ttsError
+      // Start streaming asynchronously
+      streamTokens().catch(err => {
+        console.error('[chat] Stream processing error:', err);
+        if (!res.headersSent) {
+          res.status(500).json({ message: 'Failed to process chat message' });
+        }
       });
     } catch (error) {
       console.error("Error processing chat message:", error);
@@ -646,6 +945,42 @@ Keep responses professional, informative, and engaging. Focus on the user's ques
         return res.status(404).json({ message: "Prompt not found" });
       }
       res.status(500).json({ message: "Failed to update prompt" });
+    }
+  });
+
+  // TTS Replay endpoint - regenerate audio for a message
+  app.post("/api/chat/regenerate-audio", async (req, res) => {
+    try {
+      const { text } = req.body;
+      
+      if (!text || typeof text !== 'string') {
+        return res.status(400).json({ message: "Text is required" });
+      }
+      
+      if (text.length > 5000) {
+        return res.status(400).json({ message: "Text too long" });
+      }
+
+      // Generate TTS for the text
+      const ttsResult = await generateAzureTTS(text);
+      
+      if (!ttsResult.audioBase64) {
+        return res.status(500).json({ 
+          message: "Failed to generate audio",
+          error: ttsResult.error 
+        });
+      }
+
+      res.json({
+        audioContent: ttsResult.audioBase64,
+        visemes: ttsResult.visemes,
+      });
+    } catch (error) {
+      console.error("Error regenerating audio:", error);
+      res.status(500).json({ 
+        message: "Failed to regenerate audio",
+        error: error instanceof Error ? error.message : 'Unknown error'
+      });
     }
   });
 
