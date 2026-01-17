@@ -70,18 +70,17 @@ export default function ProjectCard({ project }: ProjectCardProps) {
           {/* Actions */}
           <div className="flex gap-4">
             {demoUrl && (
-              <Button
-                variant="outline"
-                size="sm"
-                asChild
+              <a
+                href={demoUrl}
+                target="_blank"
+                rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
                 data-testid={`link-demo-${$id}`}
+                className="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium ring-offset-background transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
               >
-                <a href={demoUrl} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink className="w-4 h-4 mr-2" />
-                  Live Demo
-                </a>
-              </Button>
+                <ExternalLink className="w-4 h-4 mr-2" />
+                Live Demo
+              </a>
             )}
           </div>
         </div>

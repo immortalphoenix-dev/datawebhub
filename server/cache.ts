@@ -58,23 +58,33 @@ class InMemoryCache implements CacheService {
  */
 class RedisCache implements CacheService {
   private redis: Redis;
+  private isConnected = false;
 
   constructor(redisUrl: string) {
     this.redis = new Redis(redisUrl, {
       retryStrategy: (times) => {
+        // Stop retrying after 5 attempts
+        if (times > 5) {
+          console.warn('⚠️  Redis connection failed. Falling back to in-memory cache.');
+          return null;
+        }
         const delay = Math.min(times * 50, 2000);
         return delay;
       },
       maxRetriesPerRequest: 3,
       enableReadyCheck: false,
+      connectTimeout: 5000,
     });
 
     this.redis.on('error', (err) => {
-      console.error('Redis cache error:', err.message);
+      if (this.isConnected) {
+        console.error('Redis cache error:', err.message);
+      }
     });
 
     this.redis.on('connect', () => {
-      console.log('Redis cache connected');
+      this.isConnected = true;
+      console.log('✓ Redis cache connected');
     });
   }
 
