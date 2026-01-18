@@ -956,7 +956,7 @@ async function generateAzureTTS(text) {
     const audioBuffer = await new Promise((resolve3, reject) => {
       synthesizer.speakTextAsync(
         text,
-        (result3) => {
+        (result2) => {
           synthesizer.close();
           if (process.env.NODE_ENV !== "production") {
             console.log(`Generated ${visemes.length} visemes for text: "${text}"`);
@@ -967,12 +967,12 @@ async function generateAzureTTS(text) {
             }
             visemes.push(...generateFallbackVisemes(text));
           }
-          if (result3.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
-            const audioData = result3.audioData;
+          if (result2.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
+            const audioData = result2.audioData;
             const audioBase642 = Buffer.from(audioData).toString("base64");
             resolve3(Buffer.from(audioData));
           } else {
-            const error = `Speech synthesis failed: ${result3.errorDetails}`;
+            const error = `Speech synthesis failed: ${result2.errorDetails}`;
             console.error("Azure TTS error:", error);
             reject(new Error(error));
           }
@@ -1837,12 +1837,17 @@ function serveStatic(app2) {
 
 // server/index.ts
 import os from "node:os";
+import { existsSync } from "fs";
 var __filename2 = fileURLToPath2(import.meta.url);
 var __dirname2 = dirname2(__filename2);
 var envPath2 = resolve2(__dirname2, "../.env");
-var result2 = config2({ path: envPath2, debug: false });
-if (result2.error) {
-  console.error("Error loading .env file:", result2.error);
+if (existsSync(envPath2)) {
+  const result2 = config2({ path: envPath2, debug: false });
+  if (result2.error) {
+    console.warn("Warning loading .env file:", result2.error.message);
+  }
+} else if (process.env.NODE_ENV !== "production") {
+  console.warn("No .env file found at", envPath2);
 }
 var app = express2();
 app.use(helmet({

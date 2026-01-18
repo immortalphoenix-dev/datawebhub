@@ -14,11 +14,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const envPath = resolve(__dirname, '../.env');
 
-// Pass the debug option to config
-const result = config({ path: envPath, debug: false });
-
-if (result.error) {
-  console.error('Error loading .env file:', result.error);
+// Load .env file if it exists (optional in production where env vars are injected)
+import { existsSync } from 'fs';
+if (existsSync(envPath)) {
+  const result = config({ path: envPath, debug: false });
+  if (result.error) {
+    console.warn('Warning loading .env file:', result.error.message);
+  }
+} else if (process.env.NODE_ENV !== 'production') {
+  console.warn('No .env file found at', envPath);
 }
 
 const app = express();
