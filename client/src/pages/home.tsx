@@ -3,13 +3,10 @@ import { Github, Linkedin, Twitter, Rocket, MessageCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollReveal } from "@/lib/animations";
 import { TypeAnimation } from "react-type-animation";
-import ProjectCard from "@/components/project-card";
-import { useFeaturedProjects, prefetchProjects } from "@/hooks/use-projects";
 import ParticleBackground from "@/components/particle-background";
 
 export default function Home() {
   useScrollReveal();
-  const { data: featuredProjects, isLoading: isLoadingProjects } = useFeaturedProjects();
 
   return (
     <>
@@ -39,13 +36,13 @@ export default function Home() {
 
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Link href="/projects">
-                <Button size="lg" data-testid="button-view-work" onMouseEnter={() => prefetchProjects()} onFocus={() => prefetchProjects()}>
+                <Button size="lg" data-testid="button-view-work">
                   <Rocket className="mr-2" />
                   View My Work
                 </Button>
               </Link>
             </div>
-            
+
             <div className="flex gap-4 pt-8 md:pt-12 justify-center">
               {(import.meta.env.VITE_GITHUB_URL) && (
                 <a href={import.meta.env.VITE_GITHUB_URL} className="text-muted-foreground hover:text-primary transition-colors" target="_blank" rel="noopener noreferrer">
@@ -68,25 +65,7 @@ export default function Home() {
       </section>
 
       {/* Featured Projects Section */}
-      {featuredProjects && featuredProjects.length > 0 && (
-        <section id="featured-projects" className="py-24 bg-card">
-          <div className="container mx-auto px-6 lg:px-8 max-w-7xl">
-            <div className="text-center mb-16 scroll-reveal">
-              <h2 className="font-heading text-4xl lg:text-5xl font-bold text-card-foreground mb-4">
-                Featured <span className="text-primary">Projects</span>
-              </h2>
-              <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-                A selection of my best work, showcasing my skills and creativity.
-              </p>
-            </div>
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
-              {featuredProjects.slice(0, 3).map((project) => (
-                <ProjectCard key={project.$id} project={project} />
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
+
 
       {/* Call to Action Section */}
       <section id="cta" className="py-24 bg-background">

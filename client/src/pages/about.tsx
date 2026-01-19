@@ -26,19 +26,19 @@ export default function About() {
     {
       title: "Freelance Website Designer & Data Analyst",
       company: "Independent Contractor",
-      period: "2022 - Present",
+      period: "2025 - Present",
       description: "Working as a freelance developer, delivering custom web applications and data analysis solutions for clients. Specializing in responsive website design, full-stack development with React/Next.js, and quantitative data analysis using Python and statistical modeling techniques."
     },
     {
-      title: "Self-Taught Full-Stack Developer",
-      company: "Personal Development",
-      period: "2020 - 2022",
-      description: "Dedicated self-learning journey mastering modern web technologies including React, TypeScript, Node.js, and Express.js. Built personal projects and gained expertise in mobile development for Android platforms while developing strong foundations in data analysis and visualization."
+      title: "Full Stack Developer",
+      company: "Self-Development & Freelance",
+      period: "2022 - 2024",
+      description: "Dedicated journey mastering modern web technologies including React, TypeScript, Node.js, and Express.js. Built personal projects and gained expertise in mobile development for Android platforms while developing strong foundations in data analysis and visualization."
     },
     {
       title: "Data Analysis & Research Assistant",
       company: "Academic Projects",
-      period: "2019 - 2020",
+      period: "2021 - 2022",
       description: "Applied econometric and statistical analysis techniques to academic research projects. Developed skills in data visualization, quantitative research methods, and statistical modeling using Python, R, and various analytical tools."
     }
   ];
