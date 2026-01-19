@@ -1879,6 +1879,7 @@ if (existsSync2(envPath2)) {
   console.warn("No .env file found at", envPath2);
 }
 var app = express2();
+app.set("trust proxy", 1);
 app.use(helmet({
   contentSecurityPolicy: false
 }));

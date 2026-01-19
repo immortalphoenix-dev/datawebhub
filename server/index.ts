@@ -26,6 +26,7 @@ if (existsSync(envPath)) {
 }
 
 const app = express();
+app.set("trust proxy", 1); // Trust first proxy (Koyeb load balancer)
 app.use(helmet({
   contentSecurityPolicy: false,
 }));
