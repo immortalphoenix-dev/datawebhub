@@ -27,7 +27,7 @@ async function playAudioWithVisemes(
 
     // Lazy-load AudioContext only when audio playback is needed
     const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-    
+
     // Decode audio data
     const decoded = await new Promise<AudioBuffer>((resolve, reject) => {
       audioCtx.decodeAudioData(buffer.slice(0), resolve, reject);
@@ -44,7 +44,7 @@ async function playAudioWithVisemes(
         const meta = JSON.parse(chatMessage.metadata);
         if (Array.isArray(meta.visemes)) serverVisemes = meta.visemes;
       }
-    } catch {}
+    } catch { }
 
     // Cleanup on audio end
     source.onended = () => {
@@ -68,7 +68,16 @@ export function useChat() {
   const [lastAudioMessageId, setLastAudioMessageId] = useState<string | null>(null); // Track last message for audio retry
   const [isRetryingAudio, setIsRetryingAudio] = useState(false);
   const queryClient = useQueryClient();
-  const sessionId = localStorage.getItem('sessionId');
+  // Ensure sessionId exists synchronously
+  const getSessionId = () => {
+    let id = localStorage.getItem('sessionId');
+    if (!id) {
+      id = "session-" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+      localStorage.setItem('sessionId', id);
+    }
+    return id;
+  };
+  const sessionId = getSessionId();
   const { toast } = useToast();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [visemes, setVisemes] = useState<{ id: number; offset: number }[]>([]);
@@ -104,10 +113,10 @@ export function useChat() {
   const sendMessageMutation = useMutation({
     mutationFn: async ({ message, prompts }: { message: string, prompts: Prompt[] }) => {
       if (!sessionId) throw new Error("Session ID not found");
-      
+
       // Reset streaming message
       setStreamingMessage(null);
-      
+
       // Start UI timeout (20 second) for faster user feedback - separate from API timeout (30s)
       let uiTimeout: NodeJS.Timeout | null = null;
       const uiTimeoutPromise = new Promise<never>((_, reject) => {
@@ -120,7 +129,7 @@ export function useChat() {
       // Make streaming API call
       const streamPromise = (async () => {
         const response = await apiRequest('POST', '/api/chat', { message, prompts, sessionId });
-        
+
         if (!response.body) {
           throw new Error('No response body');
         }
@@ -134,11 +143,11 @@ export function useChat() {
         try {
           while (true) {
             const { done, value } = await reader.read();
-            
+
             if (done) break;
 
             buffer += decoder.decode(value, { stream: true });
-            
+
             // Process complete lines (NDJSON format)
             const lines = buffer.split('\n');
             buffer = lines[lines.length - 1]; // Keep incomplete line in buffer
@@ -228,7 +237,7 @@ export function useChat() {
       setIsUiTimedOut(false);
       setStreamingMessage(null); // Clear streaming message
       const { chatMessage, audioContent, ttsError, quickStarters: newQuickStarters } = data;
-      
+
       // Helper to add message to cache
       const addMessageToCache = () => {
         queryClient.setQueryData<ChatMessage[]>(['/api/chat/messages', sessionId], (oldMessages = []) => {
@@ -237,7 +246,7 @@ export function useChat() {
       };
       setError(null);
       setLastMessageText(null); // Clear for retry tracking
-      
+
       // Update quick starters for next user interaction
       if (newQuickStarters && Array.isArray(newQuickStarters)) {
         setQuickStarters(newQuickStarters);
@@ -283,7 +292,7 @@ export function useChat() {
       setIsAiProcessing(false);
       setIsTtsProcessing(false);
       setError(err.message || 'Failed to send message');
-      
+
       // Only show toast if not UI timeout (UI timeout has its own error display in chat interface)
       if (!err.message.includes('taking longer')) {
         toast({
@@ -315,9 +324,9 @@ export function useChat() {
       const response = await apiRequest('POST', '/api/chat/regenerate-audio', {
         text,
       });
-      
+
       const data = await response.json();
-      
+
       if (!response.ok) {
         throw new Error(data.error || 'Failed to regenerate audio');
       }
@@ -338,16 +347,16 @@ export function useChat() {
         }
         return msg;
       });
-      
+
       queryClient.setQueryData(['/api/chat/messages', sessionId], updatedMessages);
-      
+
       toast({
         title: "Audio regenerated",
         description: "Click the speaker icon to play",
       });
 
       setLastAudioMessageId(messageId);
-      
+
       // Play the new audio
       if (data.audioContent) {
         const message = updatedMessages.find(m => m.$id === messageId);
@@ -361,7 +370,7 @@ export function useChat() {
               setVisemes([]);
               setVisemeStartTime(null);
             },
-            onMessageAdded: () => {},
+            onMessageAdded: () => { },
           });
         }
       }
