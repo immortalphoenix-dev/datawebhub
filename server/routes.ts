@@ -76,7 +76,7 @@ function generateFallbackVisemes(text: string): { id: number; offset: number }[]
 // Azure TTS function with male voice and caching
 async function generateAzureTTS(text: string): Promise<{ audioBase64: string | null; visemes: { id: number; offset: number }[]; error?: string }> {
   // Use male voice
-  const voice = 'en-US-ChristopherNeural'; // Male voice
+  const voice = 'en-US-AndrewNeural'; // Male voice (Faster/Lower Latency)
   const key = getAzureTTSCacheKey(text, voice);
 
   // Check cache

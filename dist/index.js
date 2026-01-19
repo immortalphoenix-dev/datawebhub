@@ -961,7 +961,7 @@ function generateFallbackVisemes(text) {
   return visemes;
 }
 async function generateAzureTTS(text) {
-  const voice = "en-US-ChristopherNeural";
+  const voice = "en-US-AndrewNeural";
   const key = getAzureTTSCacheKey(text, voice);
   const cached = azureTTSCache.get(key);
   if (cached && Date.now() - cached.timestamp < AZURE_TTS_CACHE_TTL) {
