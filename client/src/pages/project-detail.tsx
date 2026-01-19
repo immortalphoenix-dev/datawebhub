@@ -23,11 +23,6 @@ export default function ProjectDetail() {
     enabled: !!projectId,
   });
 
-  if (project) {
-    console.log('ProjectDetail rendering project:', project);
-  } else {
-    console.log('ProjectDetail: project is undefined/loading');
-  }
 
   if (isLoading) {
     return (
