@@ -33,7 +33,7 @@ export default defineConfig({
     minify: 'terser',
     terserOptions: {
       compress: {
-        drop_console: process.env.NODE_ENV === 'production',
+        drop_console: false, // Keep logs for debugging
       },
     },
     rollupOptions: {
