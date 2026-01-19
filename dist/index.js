@@ -984,8 +984,17 @@ async function generateAzureTTS(text) {
       });
     };
     const audioBuffer = await new Promise((resolve3, reject) => {
-      synthesizer.speakTextAsync(
-        text,
+      const escapedText = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+      const ssml = `
+        <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
+          <voice name="${voice}">
+            <prosody rate="1.5">
+              ${escapedText}
+            </prosody>
+          </voice>
+        </speak>`;
+      synthesizer.speakSsmlAsync(
+        ssml,
         (result) => {
           synthesizer.close();
           if (process.env.NODE_ENV !== "production") {
