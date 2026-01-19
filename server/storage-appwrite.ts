@@ -66,9 +66,16 @@ function mapDocumentToPrompt(doc: Models.Document): Prompt {
 }
 
 export class AppwriteStorage implements IStorage {
+  private ensureConfigured() {
+    if (!databases || !users || !storageService) {
+      throw new Error('Appwrite is not configured. Check APPWRITE_* environment variables.');
+    }
+  }
+
   async getUser(id: string): Promise<User | undefined> {
+    this.ensureConfigured();
     try {
-      const appwriteUser = await users.get(id);
+      const appwriteUser = await users!.get(id);
       return {
         id: appwriteUser.$id,
         username: appwriteUser.email || appwriteUser.name || '',
@@ -83,8 +90,9 @@ export class AppwriteStorage implements IStorage {
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
+    this.ensureConfigured();
     try {
-      const response = await users.list([
+      const response = await users!.list([
         Query.equal('email', username)
       ]);
       if (response.users.length > 0) {
@@ -102,8 +110,9 @@ export class AppwriteStorage implements IStorage {
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
+    this.ensureConfigured();
     try {
-      const appwriteUser = await users.create(
+      const appwriteUser = await users!.create(
         ID.unique(),
         insertUser.username,
         insertUser.password,
@@ -121,14 +130,16 @@ export class AppwriteStorage implements IStorage {
 
   // Project methods
   async getProjects(): Promise<Project[]> {
-    const response = await databases.listDocuments(DATABASE_ID, PROJECTS_COLLECTION_ID, [
+    this.ensureConfigured();
+    const response = await databases!.listDocuments(DATABASE_ID, PROJECTS_COLLECTION_ID, [
       Query.orderDesc('$createdAt')
     ]);
     return response.documents.map(mapDocumentToProject);
   }
 
   async getProjectsByCategory(category: string): Promise<Project[]> {
-    const response = await databases.listDocuments(DATABASE_ID, PROJECTS_COLLECTION_ID, [
+    this.ensureConfigured();
+    const response = await databases!.listDocuments(DATABASE_ID, PROJECTS_COLLECTION_ID, [
       Query.equal('category', category),
       Query.orderDesc('$createdAt')
     ]);
@@ -140,8 +151,9 @@ export class AppwriteStorage implements IStorage {
   }
 
   async getProject(id: string): Promise<Project | undefined> {
+    this.ensureConfigured();
     try {
-      const response = await databases.getDocument(DATABASE_ID, PROJECTS_COLLECTION_ID, id);
+      const response = await databases!.getDocument(DATABASE_ID, PROJECTS_COLLECTION_ID, id);
       return mapDocumentToProject(response);
     } catch (error: any) {
       if (error.code === 404) {
@@ -152,7 +164,8 @@ export class AppwriteStorage implements IStorage {
   }
 
   async createProject(project: InsertProject): Promise<Project> {
-    const response = await databases.createDocument(
+    this.ensureConfigured();
+    const response = await databases!.createDocument(
       DATABASE_ID,
       PROJECTS_COLLECTION_ID,
       ID.unique(),
@@ -162,7 +175,8 @@ export class AppwriteStorage implements IStorage {
   }
 
   async updateProject(id: string, project: Partial<InsertProject>): Promise<Project> {
-    const response = await databases.updateDocument(
+    this.ensureConfigured();
+    const response = await databases!.updateDocument(
       DATABASE_ID,
       PROJECTS_COLLECTION_ID,
       id,
@@ -172,24 +186,27 @@ export class AppwriteStorage implements IStorage {
   }
 
   async deleteProject(id: string): Promise<boolean> {
-    await databases.deleteDocument(DATABASE_ID, PROJECTS_COLLECTION_ID, id);
+    this.ensureConfigured();
+    await databases!.deleteDocument(DATABASE_ID, PROJECTS_COLLECTION_ID, id);
     return true;
   }
 
   // Chat methods
   async getChatMessages(sessionId: string): Promise<ChatMessage[]> {
-    const response = await databases.listDocuments(DATABASE_ID, CHAT_MESSAGES_COLLECTION_ID, [
-        Query.equal('sessionId', sessionId),
-        Query.orderAsc('$createdAt')
+    this.ensureConfigured();
+    const response = await databases!.listDocuments(DATABASE_ID, CHAT_MESSAGES_COLLECTION_ID, [
+      Query.equal('sessionId', sessionId),
+      Query.orderAsc('$createdAt')
     ]);
     return response.documents.map(mapDocumentToChatMessage);
   }
 
   async createChatMessage(message: InsertChatMessage): Promise<ChatMessage> {
+    this.ensureConfigured();
     console.log('createChatMessage input:', JSON.stringify(message, null, 2));
     console.log('DATABASE_ID:', DATABASE_ID);
     console.log('CHAT_MESSAGES_COLLECTION_ID:', CHAT_MESSAGES_COLLECTION_ID);
-    const response = await databases.createDocument(
+    const response = await databases!.createDocument(
       DATABASE_ID,
       CHAT_MESSAGES_COLLECTION_ID,
       ID.unique(),
@@ -200,7 +217,8 @@ export class AppwriteStorage implements IStorage {
 
   // Prompt methods
   async createPrompt(prompt: InsertPrompt): Promise<Prompt> {
-    const response = await databases.createDocument(
+    this.ensureConfigured();
+    const response = await databases!.createDocument(
       DATABASE_ID,
       PROMPTS_COLLECTION_ID,
       ID.unique(),
@@ -210,14 +228,16 @@ export class AppwriteStorage implements IStorage {
   }
 
   async getPrompts(): Promise<Prompt[]> {
-    const response = await databases.listDocuments(DATABASE_ID, PROMPTS_COLLECTION_ID, [
-        Query.orderAsc('$createdAt')
+    this.ensureConfigured();
+    const response = await databases!.listDocuments(DATABASE_ID, PROMPTS_COLLECTION_ID, [
+      Query.orderAsc('$createdAt')
     ]);
     return response.documents.map(mapDocumentToPrompt);
   }
 
   async updatePrompt(id: string, prompt: Partial<InsertPrompt>): Promise<Prompt> {
-    const response = await databases.updateDocument(
+    this.ensureConfigured();
+    const response = await databases!.updateDocument(
       DATABASE_ID,
       PROMPTS_COLLECTION_ID,
       id,
@@ -227,17 +247,19 @@ export class AppwriteStorage implements IStorage {
   }
 
   async deletePrompt(id: string): Promise<boolean> {
-    await databases.deleteDocument(DATABASE_ID, PROMPTS_COLLECTION_ID, id);
+    this.ensureConfigured();
+    await databases!.deleteDocument(DATABASE_ID, PROMPTS_COLLECTION_ID, id);
     return true;
   }
 
   // File methods
   async uploadFile(file: any): Promise<string> {
+    this.ensureConfigured();
     // Convert multer file to a format Appwrite can accept
     const fileData = file.buffer || file;
     const fileName = file.originalname || 'uploaded-file';
 
-    const response = await storageService.createFile(
+    const response = await storageService!.createFile(
       STORAGE_BUCKET_ID,
       ID.unique(),
       new File([fileData], fileName, { type: file.mimetype || 'application/octet-stream' })

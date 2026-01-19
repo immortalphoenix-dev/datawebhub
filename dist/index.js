@@ -14,6 +14,7 @@ import { createServer } from "http";
 import { randomUUID } from "crypto";
 
 // server/lib/appwrite.ts
+import { existsSync } from "fs";
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -21,25 +22,33 @@ import { Client, Databases, Users, Storage, Account } from "node-appwrite";
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = dirname(__filename);
 var envPath = resolve(__dirname, "../../.env");
-var result = config({ path: envPath, debug: false });
-if (result.error) {
-  console.error("Error loading .env:", result.error);
+if (existsSync(envPath)) {
+  const result = config({ path: envPath, debug: false });
+  if (result.error) {
+    console.warn("Warning loading .env:", result.error.message);
+  }
 }
 var endpoint = process.env.APPWRITE_ENDPOINT;
 var projectId = process.env.APPWRITE_PROJECT_ID;
 var apiKey = process.env.APPWRITE_API_KEY;
-if (!endpoint || !projectId || !apiKey) {
-  throw new Error("Appwrite server environment variables are required.");
-}
-var client = new Client();
-client.setEndpoint(endpoint).setProject(projectId).setKey(apiKey);
-var databases = new Databases(client);
-var users = new Users(client);
-var storageService = new Storage(client);
-var account = new Account(client);
-var DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
-if (!DATABASE_ID) {
-  throw new Error("Appwrite database ID is required.");
+var databases = null;
+var users = null;
+var storageService = null;
+var account = null;
+var DATABASE_ID = "";
+if (endpoint && projectId && apiKey) {
+  const client = new Client();
+  client.setEndpoint(endpoint).setProject(projectId).setKey(apiKey);
+  databases = new Databases(client);
+  users = new Users(client);
+  storageService = new Storage(client);
+  account = new Account(client);
+  DATABASE_ID = process.env.APPWRITE_DATABASE_ID || "";
+  if (!DATABASE_ID) {
+    console.warn("APPWRITE_DATABASE_ID not set - some features may not work");
+  }
+} else {
+  console.warn("Appwrite server not configured. Set APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID, and APPWRITE_API_KEY.");
 }
 
 // server/storage-appwrite.ts
@@ -98,7 +107,13 @@ function mapDocumentToPrompt(doc) {
   };
 }
 var AppwriteStorage = class {
+  ensureConfigured() {
+    if (!databases || !users || !storageService) {
+      throw new Error("Appwrite is not configured. Check APPWRITE_* environment variables.");
+    }
+  }
   async getUser(id) {
+    this.ensureConfigured();
     try {
       const appwriteUser = await users.get(id);
       return {
@@ -115,6 +130,7 @@ var AppwriteStorage = class {
     }
   }
   async getUserByUsername(username) {
+    this.ensureConfigured();
     try {
       const response = await users.list([
         Query.equal("email", username)
@@ -134,6 +150,7 @@ var AppwriteStorage = class {
     }
   }
   async createUser(insertUser) {
+    this.ensureConfigured();
     try {
       const appwriteUser = await users.create(
         ID.unique(),
@@ -153,12 +170,14 @@ var AppwriteStorage = class {
   }
   // Project methods
   async getProjects() {
+    this.ensureConfigured();
     const response = await databases.listDocuments(DATABASE_ID, PROJECTS_COLLECTION_ID, [
       Query.orderDesc("$createdAt")
     ]);
     return response.documents.map(mapDocumentToProject);
   }
   async getProjectsByCategory(category) {
+    this.ensureConfigured();
     const response = await databases.listDocuments(DATABASE_ID, PROJECTS_COLLECTION_ID, [
       Query.equal("category", category),
       Query.orderDesc("$createdAt")
@@ -169,6 +188,7 @@ var AppwriteStorage = class {
     return [];
   }
   async getProject(id) {
+    this.ensureConfigured();
     try {
       const response = await databases.getDocument(DATABASE_ID, PROJECTS_COLLECTION_ID, id);
       return mapDocumentToProject(response);
@@ -180,6 +200,7 @@ var AppwriteStorage = class {
     }
   }
   async createProject(project) {
+    this.ensureConfigured();
     const response = await databases.createDocument(
       DATABASE_ID,
       PROJECTS_COLLECTION_ID,
@@ -189,6 +210,7 @@ var AppwriteStorage = class {
     return mapDocumentToProject(response);
   }
   async updateProject(id, project) {
+    this.ensureConfigured();
     const response = await databases.updateDocument(
       DATABASE_ID,
       PROJECTS_COLLECTION_ID,
@@ -198,11 +220,13 @@ var AppwriteStorage = class {
     return mapDocumentToProject(response);
   }
   async deleteProject(id) {
+    this.ensureConfigured();
     await databases.deleteDocument(DATABASE_ID, PROJECTS_COLLECTION_ID, id);
     return true;
   }
   // Chat methods
   async getChatMessages(sessionId) {
+    this.ensureConfigured();
     const response = await databases.listDocuments(DATABASE_ID, CHAT_MESSAGES_COLLECTION_ID, [
       Query.equal("sessionId", sessionId),
       Query.orderAsc("$createdAt")
@@ -210,6 +234,7 @@ var AppwriteStorage = class {
     return response.documents.map(mapDocumentToChatMessage);
   }
   async createChatMessage(message) {
+    this.ensureConfigured();
     console.log("createChatMessage input:", JSON.stringify(message, null, 2));
     console.log("DATABASE_ID:", DATABASE_ID);
     console.log("CHAT_MESSAGES_COLLECTION_ID:", CHAT_MESSAGES_COLLECTION_ID);
@@ -223,6 +248,7 @@ var AppwriteStorage = class {
   }
   // Prompt methods
   async createPrompt(prompt) {
+    this.ensureConfigured();
     const response = await databases.createDocument(
       DATABASE_ID,
       PROMPTS_COLLECTION_ID,
@@ -232,12 +258,14 @@ var AppwriteStorage = class {
     return mapDocumentToPrompt(response);
   }
   async getPrompts() {
+    this.ensureConfigured();
     const response = await databases.listDocuments(DATABASE_ID, PROMPTS_COLLECTION_ID, [
       Query.orderAsc("$createdAt")
     ]);
     return response.documents.map(mapDocumentToPrompt);
   }
   async updatePrompt(id, prompt) {
+    this.ensureConfigured();
     const response = await databases.updateDocument(
       DATABASE_ID,
       PROMPTS_COLLECTION_ID,
@@ -247,11 +275,13 @@ var AppwriteStorage = class {
     return mapDocumentToPrompt(response);
   }
   async deletePrompt(id) {
+    this.ensureConfigured();
     await databases.deleteDocument(DATABASE_ID, PROMPTS_COLLECTION_ID, id);
     return true;
   }
   // File methods
   async uploadFile(file) {
+    this.ensureConfigured();
     const fileData = file.buffer || file;
     const fileName = file.originalname || "uploaded-file";
     const response = await storageService.createFile(
@@ -956,7 +986,7 @@ async function generateAzureTTS(text) {
     const audioBuffer = await new Promise((resolve3, reject) => {
       synthesizer.speakTextAsync(
         text,
-        (result2) => {
+        (result) => {
           synthesizer.close();
           if (process.env.NODE_ENV !== "production") {
             console.log(`Generated ${visemes.length} visemes for text: "${text}"`);
@@ -967,12 +997,12 @@ async function generateAzureTTS(text) {
             }
             visemes.push(...generateFallbackVisemes(text));
           }
-          if (result2.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
-            const audioData = result2.audioData;
+          if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
+            const audioData = result.audioData;
             const audioBase642 = Buffer.from(audioData).toString("base64");
             resolve3(Buffer.from(audioData));
           } else {
-            const error = `Speech synthesis failed: ${result2.errorDetails}`;
+            const error = `Speech synthesis failed: ${result.errorDetails}`;
             console.error("Azure TTS error:", error);
             reject(new Error(error));
           }
@@ -1837,14 +1867,14 @@ function serveStatic(app2) {
 
 // server/index.ts
 import os from "node:os";
-import { existsSync } from "fs";
+import { existsSync as existsSync2 } from "fs";
 var __filename2 = fileURLToPath2(import.meta.url);
 var __dirname2 = dirname2(__filename2);
 var envPath2 = resolve2(__dirname2, "../.env");
-if (existsSync(envPath2)) {
-  const result2 = config2({ path: envPath2, debug: false });
-  if (result2.error) {
-    console.warn("Warning loading .env file:", result2.error.message);
+if (existsSync2(envPath2)) {
+  const result = config2({ path: envPath2, debug: false });
+  if (result.error) {
+    console.warn("Warning loading .env file:", result.error.message);
   }
 } else if (process.env.NODE_ENV !== "production") {
   console.warn("No .env file found at", envPath2);
