@@ -11,7 +11,7 @@ import { track } from "@/lib/telemetry";
  */
 async function playAudioWithVisemes(
   audioBase64: string,
-  chatMessage: ChatMessage,
+  visemes: { id: number; offset: number }[],
   callbacks: {
     onVisemesStart: (visemes: { id: number; offset: number }[], startTime: number) => void;
     onVisemesEnd: () => void;
@@ -37,22 +37,13 @@ async function playAudioWithVisemes(
     source.buffer = decoded;
     source.connect(audioCtx.destination);
 
-    // Extract visemes from metadata if present
-    let serverVisemes: { id: number; offset: number }[] = [];
-    try {
-      if (chatMessage.metadata) {
-        const meta = JSON.parse(chatMessage.metadata);
-        if (Array.isArray(meta.visemes)) serverVisemes = meta.visemes;
-      }
-    } catch { }
-
     // Cleanup on audio end
     source.onended = () => {
       callbacks.onVisemesEnd();
     };
 
     // Start audio & viseme sync
-    callbacks.onVisemesStart(serverVisemes, performance.now());
+    callbacks.onVisemesStart(visemes, performance.now());
     callbacks.onMessageAdded();
     source.start();
   } catch (err) {
@@ -86,6 +77,11 @@ export function useChat() {
   const uiTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [quickStarters, setQuickStarters] = useState<Array<{ text: string; description?: string }>>([]);
 
+  // Audio queue for streaming
+  const audioQueue = useRef<{ audioContent: string; visemes: { id: number; offset: number }[] }[]>([]);
+  const isPlayingAudio = useRef(false);
+  const hasPlayedAudio = useRef(false);
+
   // Granular loading states for better UX
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [isTtsProcessing, setIsTtsProcessing] = useState(false);
@@ -109,13 +105,44 @@ export function useChat() {
   // Track streaming message state
   const [streamingMessage, setStreamingMessage] = useState<Partial<ChatMessage> | null>(null);
 
+  const processAudioQueue = async () => {
+    if (isPlayingAudio.current || audioQueue.current.length === 0) return;
+
+    isPlayingAudio.current = true;
+    hasPlayedAudio.current = true; // Mark that we have played at least something
+    const item = audioQueue.current.shift();
+
+    if (item) {
+      await playAudioWithVisemes(item.audioContent, item.visemes, {
+        onVisemesStart: (visemes, startTime) => {
+          setVisemes(visemes);
+          setVisemeStartTime(startTime);
+        },
+        onVisemesEnd: () => {
+          setVisemes([]);
+          setVisemeStartTime(null);
+          isPlayingAudio.current = false;
+          processAudioQueue(); // Play next chunk
+        },
+        onMessageAdded: () => {
+          // Optional: handle side effects when a chunk starts playing
+        },
+      });
+    } else {
+      isPlayingAudio.current = false;
+    }
+  };
+
   // Send message mutation
   const sendMessageMutation = useMutation({
     mutationFn: async ({ message, prompts }: { message: string, prompts: Prompt[] }) => {
       if (!sessionId) throw new Error("Session ID not found");
 
-      // Reset streaming message
+      // Reset streaming message and audio state
       setStreamingMessage(null);
+      audioQueue.current = [];
+      isPlayingAudio.current = false;
+      hasPlayedAudio.current = false;
 
       // Start UI timeout (20 second) for faster user feedback - separate from API timeout (30s)
       let uiTimeout: NodeJS.Timeout | null = null;
@@ -170,6 +197,15 @@ export function useChat() {
                     sessionId,
                     message: message,
                   }));
+                } else if (chunk.type === 'audio_chunk') {
+                  // Handle streaming audio chunk
+                  if (chunk.audioContent) {
+                    audioQueue.current.push({
+                      audioContent: chunk.audioContent,
+                      visemes: chunk.visemes || []
+                    });
+                    processAudioQueue();
+                  }
                 } else if (chunk.type === 'message_complete') {
                   // Stream complete - got full message with metadata and quick starters
                   finalData = {
@@ -233,7 +269,7 @@ export function useChat() {
     },
     onSuccess: (data: { chatMessage: ChatMessage, audioContent: string | null, ttsError?: string | null, quickStarters?: Array<{ text: string; description?: string }> }) => {
       setIsAiProcessing(false);
-      setIsTtsProcessing(!!data.audioContent); // Only show TTS processing if we have audio
+      setIsTtsProcessing(false); // We can assume TTS is done or streaming
       setIsUiTimedOut(false);
       setStreamingMessage(null); // Clear streaming message
       const { chatMessage, audioContent, ttsError, quickStarters: newQuickStarters } = data;
@@ -244,6 +280,9 @@ export function useChat() {
           return [...oldMessages, chatMessage];
         });
       };
+
+      addMessageToCache(); // Add message immediately
+
       setError(null);
       setLastMessageText(null); // Clear for retry tracking
 
@@ -262,9 +301,18 @@ export function useChat() {
         setLastAudioMessageId(chatMessage.$id);
       }
 
-      // Lazy-load and play audio only when it's available
-      if (audioContent) {
-        playAudioWithVisemes(audioContent, chatMessage, {
+      // If we haven't played anything yet (no chunks streamed), play valid full audio
+      // This is a fallback for short messages or if streaming failed
+      if (!hasPlayedAudio.current && audioContent) {
+        let serverVisemes: { id: number; offset: number }[] = [];
+        try {
+          if (chatMessage.metadata) {
+            const meta = JSON.parse(chatMessage.metadata);
+            if (Array.isArray(meta.visemes)) serverVisemes = meta.visemes;
+          }
+        } catch { }
+
+        playAudioWithVisemes(audioContent, serverVisemes, {
           onVisemesStart: (visemes, startTime) => {
             setVisemes(visemes);
             setVisemeStartTime(startTime);
@@ -272,20 +320,11 @@ export function useChat() {
           onVisemesEnd: () => {
             setVisemes([]);
             setVisemeStartTime(null);
-            setIsTtsProcessing(false);
           },
-          onMessageAdded: () => {
-            addMessageToCache();
-          },
+          onMessageAdded: () => { },
         }).catch((err) => {
           console.error('Failed to play audio:', err);
-          setIsTtsProcessing(false);
-          addMessageToCache();
         });
-      } else {
-        // No audio returned, just show text
-        setIsTtsProcessing(false);
-        addMessageToCache();
       }
     },
     onError: (err: Error) => {
@@ -361,7 +400,15 @@ export function useChat() {
       if (data.audioContent) {
         const message = updatedMessages.find(m => m.$id === messageId);
         if (message) {
-          await playAudioWithVisemes(data.audioContent, message, {
+          let serverVisemes: { id: number; offset: number }[] = [];
+          try {
+            if (message.metadata) {
+              const meta = JSON.parse(message.metadata);
+              if (Array.isArray(meta.visemes)) serverVisemes = meta.visemes;
+            }
+          } catch { }
+
+          await playAudioWithVisemes(data.audioContent, serverVisemes, {
             onVisemesStart: (visemes, startTime) => {
               setVisemes(visemes);
               setVisemeStartTime(startTime);

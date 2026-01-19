@@ -1458,10 +1458,35 @@ async function registerRoutes(app2) {
       res.write(JSON.stringify({ type: "message_start", sessionId, message }) + "\n");
       const streamTokens = async () => {
         let fullResponse = "";
+        let sentenceBuffer = "";
         let tokenCount = 0;
+        let ttsChain = Promise.resolve();
+        const processSentence = (text) => {
+          if (!text.trim()) return;
+          ttsChain = ttsChain.then(async () => {
+            try {
+              if (process.env.NODE_ENV !== "production") {
+                console.log(`[chat] Generating TTS for chunk: "${text.substring(0, 20)}..."`);
+              }
+              const { audioBase64, visemes, error } = await generateAzureTTS(text);
+              if (audioBase64) {
+                res.write(JSON.stringify({
+                  type: "audio_chunk",
+                  audioContent: audioBase64,
+                  visemes
+                }) + "\n");
+              } else if (error) {
+                console.error("[chat] TTS error for chunk:", error);
+              }
+            } catch (err) {
+              console.error("[chat] TTS generation failed for chunk:", err);
+            }
+          });
+        };
         try {
           for (const model of [primaryModel, ...fallbackModels]) {
             fullResponse = "";
+            sentenceBuffer = "";
             tokenCount = 0;
             try {
               const apiStart = Date.now();
@@ -1471,9 +1496,22 @@ async function registerRoutes(app2) {
                 const token = delta?.content || "";
                 if (token) {
                   fullResponse += token;
+                  sentenceBuffer += token;
                   tokenCount++;
                   res.write(JSON.stringify({ type: "token", content: token }) + "\n");
+                  if (/[.?!]/.test(token)) {
+                    const parts = sentenceBuffer.split(/([.?!]+[\s"'])/);
+                    if (parts.length > 1) {
+                      if (/[.?!][\s"']$/.test(sentenceBuffer) || sentenceBuffer.length > 100 && /[.?!]$/.test(sentenceBuffer)) {
+                        processSentence(sentenceBuffer);
+                        sentenceBuffer = "";
+                      }
+                    }
+                  }
                 }
+              }
+              if (sentenceBuffer.trim()) {
+                processSentence(sentenceBuffer);
               }
               if (process.env.NODE_ENV !== "production") {
                 console.log("[chat] Stream API call for", model, "took", Date.now() - apiStart, "ms, tokens:", tokenCount);
@@ -1487,8 +1525,11 @@ async function registerRoutes(app2) {
               throw e;
             }
           }
+          await ttsChain;
           if (!fullResponse) {
             fullResponse = "I'm sorry, I couldn't generate a response.";
+            processSentence(fullResponse);
+            await ttsChain;
           }
           const getAnimationFromResponse = (text) => {
             const lowerText = text.toLowerCase();

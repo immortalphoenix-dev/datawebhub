@@ -728,11 +728,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Stream tokens as they arrive (will collect full response too)
       const streamTokens = async () => {
         let fullResponse = '';
+        let sentenceBuffer = '';
         let tokenCount = 0;
+        let ttsChain = Promise.resolve(); // Chain to ensure sequential TTS generation
+
+        const processSentence = (text: string) => {
+          if (!text.trim()) return;
+
+          ttsChain = ttsChain.then(async () => {
+            try {
+              if (process.env.NODE_ENV !== 'production') {
+                console.log(`[chat] Generating TTS for chunk: "${text.substring(0, 20)}..."`);
+              }
+              const { audioBase64, visemes, error } = await generateAzureTTS(text);
+              if (audioBase64) {
+                res.write(JSON.stringify({
+                  type: 'audio_chunk',
+                  audioContent: audioBase64,
+                  visemes
+                }) + '\n');
+              } else if (error) {
+                console.error('[chat] TTS error for chunk:', error);
+              }
+            } catch (err) {
+              console.error('[chat] TTS generation failed for chunk:', err);
+            }
+          });
+        };
+
         try {
           for (const model of [primaryModel, ...fallbackModels]) {
             fullResponse = '';
+            sentenceBuffer = '';
             tokenCount = 0;
+
             try {
               const apiStart = Date.now();
               const stream = await attemptStream(model);
@@ -743,10 +772,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                 if (token) {
                   fullResponse += token;
+                  sentenceBuffer += token;
                   tokenCount++;
+
                   // Send each token to client for real-time display
                   res.write(JSON.stringify({ type: 'token', content: token }) + '\n');
+
+                  // Check for sentence completion
+                  // We look for [.?!] followed by space or end of string, to avoid splitting "Mr." or "1.5"
+                  // Simple heuristic: if token contains a delimiter, check the buffer
+                  if (/[.?!]/.test(token)) {
+                    // Split buffer into matches
+                    // This regex finds sentences ending with . ? ! followed by space or quote
+                    // capturing the delimiter
+                    const parts = sentenceBuffer.split(/([.?!]+[\s"'])/);
+
+                    if (parts.length > 1) {
+                      // We have at least one complete sentence
+                      // Process all complete parts
+                      // The last part might be incomplete if it doesn't match the delimiter pattern fully yet
+                      // But split keeps the delimiter in the odd indices if we use capturing group
+
+                      // Let's use a simpler approach: accumulate until we strictly match a sentence end
+                      if (/[.?!][\s"']$/.test(sentenceBuffer) || (sentenceBuffer.length > 100 && /[.?!]$/.test(sentenceBuffer))) {
+                        processSentence(sentenceBuffer);
+                        sentenceBuffer = '';
+                      }
+                    }
+                  }
                 }
+              }
+
+              // Process any remaining buffer at the end of the stream
+              if (sentenceBuffer.trim()) {
+                processSentence(sentenceBuffer);
               }
 
               if (process.env.NODE_ENV !== 'production') {
@@ -762,8 +821,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
           }
 
+          // Wait for all queued TTS generation to finish
+          await ttsChain;
+
           if (!fullResponse) {
             fullResponse = "I'm sorry, I couldn't generate a response.";
+            processSentence(fullResponse);
+            await ttsChain;
           }
 
           // Now process the complete response for animations, TTS, and metadata
