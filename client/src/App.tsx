@@ -26,18 +26,20 @@ function Router() {
     <>
       <FloatingNav />
       <BottomTabBar />
-      <Suspense fallback={<PageSkeleton />}>
-        <Switch>
-          <Route path="/" component={Home} />
-          <Route path="/about" component={About} />
-          <Route path="/projects" component={Projects} />
-          <Route path="/projects/:id" component={ProjectDetail} />
-          <Route path="/chat" component={Chat} />
-          <Route path="/admin/login" component={LoginPage} />
-          <Route path="/admin/dashboard" component={DashboardPage} />
-          <Route component={NotFound} />
-        </Switch>
-      </Suspense>
+      <div className="pb-20 md:pb-0">
+        <Suspense fallback={<PageSkeleton />}>
+          <Switch>
+            <Route path="/" component={Home} />
+            <Route path="/about" component={About} />
+            <Route path="/projects" component={Projects} />
+            <Route path="/projects/:id" component={ProjectDetail} />
+            <Route path="/chat" component={Chat} />
+            <Route path="/admin/login" component={LoginPage} />
+            <Route path="/admin/dashboard" component={DashboardPage} />
+            <Route component={NotFound} />
+          </Switch>
+        </Suspense>
+      </div>
     </>
   );
 }

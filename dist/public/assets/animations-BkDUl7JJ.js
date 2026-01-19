@@ -1,0 +1,1 @@
+import{r as e}from"./index-BQPjUt4N.js";function r(){e.useEffect(()=>{const e=new IntersectionObserver(e=>{e.forEach(e=>{e.isIntersecting&&e.target.classList.add("revealed")})},{threshold:.1,rootMargin:"0px 0px -50px 0px"});return document.querySelectorAll(".scroll-reveal").forEach(r=>{e.observe(r)}),()=>e.disconnect()},[])}export{r as u};
