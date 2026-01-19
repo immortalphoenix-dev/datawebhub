@@ -122,7 +122,7 @@ async function generateAzureTTS(text: string): Promise<{ audioBase64: string | n
       const ssml = `
         <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">
           <voice name="${voice}">
-            <prosody rate="1.5">
+            <prosody rate="1.2">
               ${escapedText}
             </prosody>
           </voice>
@@ -839,15 +839,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
               ["looking behind", "looking behind"],
               ["nods head", "nods head"],
               ["shakes head", "shakes head"],
-              // ["cheering", "cheering"], // Disabled by user request
               ["punching", "punching"],
               ["stretching", "stretching"],
               ["waving", "waving"],
               ["hello", "waving"],
               ["hi", "waving"],
               ["golf", "playing golf"],
-              // ["cheer", "cheering"], // Disabled by user request
-              // ["great", "cheering"], // Disabled by user request
               ["yes", "nods head"],
               ["affirmative", "nods head"],
               ["no", "shakes head"],
