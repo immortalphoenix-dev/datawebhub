@@ -1784,9 +1784,7 @@ var vite_config_default = defineConfig({
     },
     rollupOptions: {
       treeshake: {
-        moduleSideEffects: false,
-        propertyReadSideEffects: false,
-        tryCatchDeoptimization: false
+        preset: "recommended"
       }
     }
   },
