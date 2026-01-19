@@ -123,7 +123,7 @@ export function useChat() {
         uiTimeout = setTimeout(() => {
           setIsUiTimedOut(true);
           reject(new Error('Request is taking longer than expected. Please try again.'));
-        }, 20000);
+        }, 60000);
       });
 
       // Make streaming API call

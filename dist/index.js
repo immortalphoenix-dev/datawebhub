@@ -1598,12 +1598,14 @@ async function registerRoutes(app2) {
             // Flag for client to allow audio retry
           };
           const finalMetadataString = JSON.stringify(finalMetadata);
+          const { visemes: _v, ...dbMetaObj } = finalMetadata;
+          const dbMetadataString = JSON.stringify(dbMetaObj);
           try {
             const chatMessage = await storage.createChatMessage({
               sessionId,
               message,
               response: cleanResponse,
-              metadata: finalMetadataString
+              metadata: dbMetadataString
             });
             if (process.env.NODE_ENV !== "production") {
               console.log("Chat message saved successfully");

@@ -116,8 +116,8 @@ async function generateAzureTTS(text: string): Promise<{ audioBase64: string | n
         (result) => {
           synthesizer.close();
           if (process.env.NODE_ENV !== 'production') {
-          console.log(`Generated ${visemes.length} visemes for text: "${text}"`);
-        }
+            console.log(`Generated ${visemes.length} visemes for text: "${text}"`);
+          }
 
           // Fallback: if no visemes were captured, generate basic ones based on text
           if (visemes.length === 0) {
@@ -322,9 +322,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...req.body,
         technologies: req.body.technologies
           ? req.body.technologies
-              .split(",")
-              .map((tech: string) => tech.trim())
-              .filter((tech: string) => tech.length > 0)
+            .split(",")
+            .map((tech: string) => tech.trim())
+            .filter((tech: string) => tech.length > 0)
           : [],
         imageUrl: imageUrl || undefined,
         demoUrl: normalizeUrl(req.body.demoUrl) ?? "",
@@ -403,7 +403,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     try {
       const { message, prompts, sessionId } = req.body;
-      
+
       // Input validation
       if (!message || typeof message !== 'string') {
         return res.status(400).json({ message: "Message is required" });
@@ -411,7 +411,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!sessionId || typeof sessionId !== 'string') {
         return res.status(400).json({ message: "sessionId is required" });
       }
-      
+
       // Validate message length (prevent abuse)
       if (message.length > 5000) {
         return res.status(400).json({ message: "Message too long (max 5000 characters)" });
@@ -419,12 +419,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (message.trim().length === 0) {
         return res.status(400).json({ message: "Message cannot be empty" });
       }
-      
+
       // Validate sessionId length
       if (sessionId.length > 100) {
         return res.status(400).json({ message: "Invalid sessionId" });
       }
-      
+
       // Validate prompts array if provided
       if (prompts && !Array.isArray(prompts)) {
         return res.status(400).json({ message: "Prompts must be an array" });
@@ -451,12 +451,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch (err) {
         console.warn('[chat] Could not fetch projects from Appwrite, using empty list');
       }
-      
+
       const portfolioContext = buildPortfolioContext(projects);
       const skillsContext = buildSkillsContext(projects);
       const contactContext = buildContactContext();
       const backgroundContext = buildBackgroundContext();
-      
+
       // Fetch active seeded prompts from Appwrite (with graceful fallback)
       let seedPromptText = '';
       try {
@@ -468,7 +468,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch (err) {
         console.warn('[chat] Could not fetch seeded prompts from Appwrite, using default prompts only');
       }
-      
+
       // Combine all context: persona + portfolio + seeded prompts
       const enrichedPersonaPrompt = defaultSystemPrompt + backgroundContext + portfolioContext + skillsContext + contactContext + (seedPromptText ? "\n\n" + seedPromptText : "");
 
@@ -479,11 +479,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } catch (err) {
         console.warn('[chat] Could not fetch conversation history from Appwrite');
       }
-      
+
       // Build conversation context (last N exchanges with summarization for older messages)
       // Reduced token limit to account for portfolio context
       const conversationContext = buildConversationContext(allMessages, 6, 1200);
-      
+
       // Inject conversation context into system prompt
       const enrichedSystemPrompt = injectConversationContext(enrichedPersonaPrompt, conversationContext);
 
@@ -536,15 +536,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             const chatCompletion = await Promise.race([apiPromise, timeoutPromise]);
             const responseText = chatCompletion.choices[0]?.message?.content || "I'm sorry, I couldn't generate a response.";
-            
+
             if (process.env.NODE_ENV !== 'production' && retryCount > 0) {
               console.log('[chat] API succeeded on retry', retryCount, 'for model:', model);
             }
-            
+
             return responseText;
           } catch (err: any) {
             const code = err?.error?.error?.code || err?.error?.code;
-            
+
             // Don't retry model_not_found errors
             if (code === 'model_not_found') {
               if (process.env.NODE_ENV !== 'production') {
@@ -554,9 +554,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             // Check if this is a retryable error
-            const isRetryable = err.message === 'API_TIMEOUT' || 
-                               code === 'rate_limit_exceeded' ||
-                               (err.status >= 500 && err.status < 600);
+            const isRetryable = err.message === 'API_TIMEOUT' ||
+              code === 'rate_limit_exceeded' ||
+              (err.status >= 500 && err.status < 600);
 
             // If this is the last retry or not retryable, throw the error
             if (retryCount === maxRetries || !isRetryable) {
@@ -583,7 +583,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             await new Promise(resolve => setTimeout(resolve, delay));
           }
         }
-        
+
         throw new Error('Failed after all retries');
       };
 
@@ -607,15 +607,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
 
             const stream = await Promise.race([streamPromise, timeoutPromise]);
-            
+
             if (process.env.NODE_ENV !== 'production' && retryCount > 0) {
               console.log('[chat] Stream API succeeded on retry', retryCount, 'for model:', model);
             }
-            
+
             return stream as AsyncIterable<any>;
           } catch (err: any) {
             const code = err?.error?.error?.code || err?.error?.code;
-            
+
             // Don't retry model_not_found errors
             if (code === 'model_not_found') {
               if (process.env.NODE_ENV !== 'production') {
@@ -625,9 +625,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
 
             // Check if this is a retryable error
-            const isRetryable = err.message === 'API_TIMEOUT' || 
-                               code === 'rate_limit_exceeded' ||
-                               (err.status >= 500 && err.status < 600);
+            const isRetryable = err.message === 'API_TIMEOUT' ||
+              code === 'rate_limit_exceeded' ||
+              (err.status >= 500 && err.status < 600);
 
             // If this is the last retry or not retryable, throw the error
             if (retryCount === maxRetries || !isRetryable) {
@@ -654,7 +654,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             await new Promise(resolve => setTimeout(resolve, delay));
           }
         }
-        
+
         throw new Error('Failed after all retries');
       };
 
@@ -719,11 +719,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
             try {
               const apiStart = Date.now();
               const stream = await attemptStream(model);
-              
+
               for await (const chunk of stream) {
                 const delta = chunk.choices?.[0]?.delta;
                 const token = delta?.content || '';
-                
+
                 if (token) {
                   fullResponse += token;
                   tokenCount++;
@@ -731,7 +731,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   res.write(JSON.stringify({ type: 'token', content: token }) + '\n');
                 }
               }
-              
+
               if (process.env.NODE_ENV !== 'production') {
                 console.log('[chat] Stream API call for', model, 'took', Date.now() - apiStart, 'ms, tokens:', tokenCount);
               }
@@ -863,19 +863,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
           const safeVisemes = ttsResult.visemes || generateFallbackVisemes(fullResponse);
           const effectiveAnimation = animation || 'talking';
-          
+
           // Extract quick starters from response (before stripping)
           const quickStarters = extractQuickStarters(fullResponse);
           const cleanResponse = stripQuickStarters(fullResponse);
-          
+
           // Detect if this looks like a potential deal/lead
           const dealKeywords = ['hire', 'project', 'work together', 'start', 'begin', 'interested', 'interested in working', 'can you', 'can we', 'let\'s', 'when can you', 'how soon', 'i need', 'build me', 'create', 'develop'];
           const lowerMessage = message.toLowerCase();
           const isDealClose = dealKeywords.some(keyword => lowerMessage.includes(keyword));
-          
-          const finalMetadata = { 
-            animation: effectiveAnimation, 
-            morphTargets, 
+
+          const finalMetadata = {
+            animation: effectiveAnimation,
+            morphTargets,
             visemes: safeVisemes,
             quickStarters: quickStarters,
             isDealClose: isDealClose,
@@ -884,13 +884,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           };
           const finalMetadataString = JSON.stringify(finalMetadata);
 
+          // Create database-specific metadata (exclude large visemes array to satisfy 500 char limit)
+          const { visemes: _v, ...dbMetaObj } = finalMetadata;
+          const dbMetadataString = JSON.stringify(dbMetaObj);
+
           // Try to save to database
           try {
             const chatMessage = await storage.createChatMessage({
               sessionId,
               message,
               response: cleanResponse,
-              metadata: finalMetadataString,
+              metadata: dbMetadataString,
             });
             if (process.env.NODE_ENV !== 'production') {
               console.log('Chat message saved successfully');
@@ -898,7 +902,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 console.log('🔔 POTENTIAL DEAL DETECTED - Sending email notification...');
               }
             }
-            
+
             // Send email notification if deal detected (with error handling)
             if (isDealClose) {
               try {
@@ -931,7 +935,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             ttsError,
             quickStarters: quickStarters,
           }) + '\n');
-          
+
           res.end();
         } catch (err: any) {
           console.error('[chat] Stream error:', err?.message || err);
@@ -1000,22 +1004,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/chat/regenerate-audio", async (req, res) => {
     try {
       const { text } = req.body;
-      
+
       if (!text || typeof text !== 'string') {
         return res.status(400).json({ message: "Text is required" });
       }
-      
+
       if (text.length > 5000) {
         return res.status(400).json({ message: "Text too long" });
       }
 
       // Generate TTS for the text
       const ttsResult = await generateAzureTTS(text);
-      
+
       if (!ttsResult.audioBase64) {
-        return res.status(500).json({ 
+        return res.status(500).json({
           message: "Failed to generate audio",
-          error: ttsResult.error 
+          error: ttsResult.error
         });
       }
 
@@ -1025,7 +1029,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error) {
       console.error("Error regenerating audio:", error);
-      res.status(500).json({ 
+      res.status(500).json({
         message: "Failed to regenerate audio",
         error: error instanceof Error ? error.message : 'Unknown error'
       });
