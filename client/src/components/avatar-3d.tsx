@@ -4,6 +4,7 @@ import { useGLTF, OrbitControls, useAnimations, Loader } from '@react-three/drei
 import { Suspense, useRef, useEffect, forwardRef, useImperativeHandle, useState } from 'react';
 import { useLocation } from 'wouter';
 import * as THREE from 'three';
+import avatarUrl from '@/assets/my-avatar-.glb?url';
 
 interface ModelHandle {
   playAnimation: (name: string) => void;
@@ -20,9 +21,9 @@ const Model = forwardRef<ModelHandle, ModelProps>(({ currentAnimation, currentMo
   const group = useRef<THREE.Group>(null);
   const headMesh = useRef<THREE.SkinnedMesh | null>(null);
   const visemeStartTimeRef = useRef<number | null>(null);
-  const { scene, animations } = useGLTF('/src/assets/my-avatar-.glb');
+  const { scene, animations } = useGLTF(avatarUrl);
 
-    const visemeMappings: { [key: number]: { [key: string]: number } } = {
+  const visemeMappings: { [key: number]: { [key: string]: number } } = {
     0: {}, // silence - no morph targets, mouth stays closed
     1: { mouthOpen: 0.8, mouthA: 0.6 }, // æ, ə, ʌ - ah sounds
     2: { mouthWide: 0.7, mouthSmileOpen: 0.4 }, // aɪ - eye sound
@@ -98,16 +99,16 @@ const Model = forwardRef<ModelHandle, ModelProps>(({ currentAnimation, currentMo
       return; // Do nothing if the animation is idle, not found, or not provided
     }
 
-  // Fix null checks for fromAction and toAction
-  const fromAction = actions?.idle || null;
-  const toAction = actions?.[animationName] || null;
-  if (!toAction || !fromAction) return;
+    // Fix null checks for fromAction and toAction
+    const fromAction = actions?.idle || null;
+    const toAction = actions?.[animationName] || null;
+    if (!toAction || !fromAction) return;
 
-  // Ensure the target starts playing, then crossfade from idle to target
-  toAction.reset().play();
-  fromAction.crossFadeTo(toAction, 0.3, true);
-  toAction.clampWhenFinished = true;
-  toAction.loop = THREE.LoopOnce;
+    // Ensure the target starts playing, then crossfade from idle to target
+    toAction.reset().play();
+    fromAction.crossFadeTo(toAction, 0.3, true);
+    toAction.clampWhenFinished = true;
+    toAction.loop = THREE.LoopOnce;
 
     const onFinished = (e: THREE.Event) => {
       if ((e as any).action === toAction) {
@@ -234,26 +235,26 @@ const Model = forwardRef<ModelHandle, ModelProps>(({ currentAnimation, currentMo
               }
             }
           }
-      }
-
-      // Force jaw closed always (but not during visemes)
-      if (!visemeApplied && headMesh.current.morphTargetDictionary && headMesh.current.morphTargetInfluences) {
-        const dict = headMesh.current.morphTargetDictionary;
-        if (dict['mouthOpen'] !== undefined) {
-          headMesh.current.morphTargetInfluences[dict['mouthOpen']] = 0;
         }
-      }
 
-      // 4. Apply backend-driven morph targets (if any)
-      if (currentMorphTargets && headMesh.current.morphTargetDictionary && headMesh.current.morphTargetInfluences) {
-        for (const key in currentMorphTargets) {
-          const index = headMesh.current.morphTargetDictionary[key];
-          if (index !== undefined) {
-            headMesh.current.morphTargetInfluences[index] = currentMorphTargets[key];
+        // Force jaw closed always (but not during visemes)
+        if (!visemeApplied && headMesh.current.morphTargetDictionary && headMesh.current.morphTargetInfluences) {
+          const dict = headMesh.current.morphTargetDictionary;
+          if (dict['mouthOpen'] !== undefined) {
+            headMesh.current.morphTargetInfluences[dict['mouthOpen']] = 0;
           }
         }
-      }
-              // Always force all likely mouth/jaw morph targets to 0 unless explicitly set or visemes active
+
+        // 4. Apply backend-driven morph targets (if any)
+        if (currentMorphTargets && headMesh.current.morphTargetDictionary && headMesh.current.morphTargetInfluences) {
+          for (const key in currentMorphTargets) {
+            const index = headMesh.current.morphTargetDictionary[key];
+            if (index !== undefined) {
+              headMesh.current.morphTargetInfluences[index] = currentMorphTargets[key];
+            }
+          }
+        }
+        // Always force all likely mouth/jaw morph targets to 0 unless explicitly set or visemes active
         if (!visemeApplied && headMesh.current.morphTargetDictionary && headMesh.current.morphTargetInfluences) {
           const mouthMorphs = [
             'jawOpen', 'mouthOpen', 'mouthA', 'mouthO', 'mouthU', 'mouthSmileOpen', 'mouthFunnel', 'mouthPucker', 'mouthWide', 'mouthNarrow', 'mouthRound', 'mouthUpperUp', 'mouthLowerDown'
@@ -344,7 +345,7 @@ export default function Avatar3D({ currentAnimation, currentMorphTargets, viseme
     const checkMobile = () => {
       setIsMobile(window.innerWidth <= 640); // Tailwind's 'sm' breakpoint
     };
-    
+
     checkMobile();
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
@@ -405,4 +406,4 @@ export default function Avatar3D({ currentAnimation, currentMorphTargets, viseme
 }
 
 
-useGLTF.preload('/src/assets/my-avatar-.glb')
+useGLTF.preload(avatarUrl)
