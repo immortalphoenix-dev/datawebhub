@@ -34,6 +34,12 @@ export default function DashboardPage() {
   useEffect(() => {
     const checkAuth = async () => {
       try {
+        // Check if Appwrite is configured
+        if (!account) {
+          console.warn('Authentication not configured');
+          window.location.href = "/admin/login";
+          return;
+        }
         await account.get();
         setIsAuthenticated(true);
       } catch (error) {

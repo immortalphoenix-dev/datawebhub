@@ -16,6 +16,10 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
+      // Check if Appwrite is configured
+      if (!account) {
+        throw new Error('Authentication is not configured. Please contact the administrator.');
+      }
       // Authenticate directly with Appwrite
       await account.createEmailPasswordSession(email, password);
 
