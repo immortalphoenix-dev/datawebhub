@@ -775,15 +775,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
               ["looking behind", "looking behind"],
               ["nods head", "nods head"],
               ["shakes head", "shakes head"],
-              ["cheering", "cheering"],
+              // ["cheering", "cheering"], // Disabled by user request
               ["punching", "punching"],
               ["stretching", "stretching"],
               ["waving", "waving"],
               ["hello", "waving"],
               ["hi", "waving"],
               ["golf", "playing golf"],
-              ["cheer", "cheering"],
-              ["great", "cheering"],
+              // ["cheer", "cheering"], // Disabled by user request
+              // ["great", "cheering"], // Disabled by user request
               ["yes", "nods head"],
               ["affirmative", "nods head"],
               ["no", "shakes head"],
